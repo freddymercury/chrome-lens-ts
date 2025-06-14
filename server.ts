@@ -1,5 +1,6 @@
 import * as dotenv from 'dotenv';
 import CDP from 'chrome-remote-interface';
+// @ts-ignore - Types are in types/chrome-remote-interface.d.ts
 
 // Load environment variables
 dotenv.config();
@@ -1408,7 +1409,7 @@ export class ChromeDevToolsMCPServer {
           host,
           port,
           tabCount: tabs.length,
-          tabs: tabs.map(tab => ({
+          tabs: tabs.map((tab: any) => ({
             id: tab.id,
             title: tab.title,
             url: tab.url,
@@ -1492,7 +1493,7 @@ export class ChromeDevToolsMCPServer {
           port,
           tabCount: tabs.length
         },
-        tabs: tabs.map(tab => ({
+        tabs: tabs.map((tab: any) => ({
           id: tab.id,
           title: tab.title,
           url: tab.url,
@@ -6523,12 +6524,6 @@ export class ChromeDevToolsMCPServer {
     };
   }
 
-  /**
-   * Update debugger state for a tab (used by tests)
-   */
-  public updateDebuggerState(tabId: string, state: any): void {
-    this.debuggerStates.set(tabId, state);
-  }
 
   /**
    * Watch and monitor state changes in a Chrome tab

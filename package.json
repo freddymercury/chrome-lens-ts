@@ -6,6 +6,7 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
+    "build:prod": "tsc server.ts --outDir dist --declaration --declarationMap --sourceMap --module node16 --target es2022 --skipLibCheck",
     "dev": "ts-node server.ts",
     "test": "jest",
     "lint": "eslint *.ts tests/**/*.ts",
