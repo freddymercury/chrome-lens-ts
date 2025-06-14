@@ -4174,7 +4174,8 @@ export class ChromeDevToolsMCPServer {
               error: {
                 type: 'DOMEnableError',
                 message: `DOM agent failed to enable: ${error instanceof Error ? error.message : 'Unknown error'}`,
-                details: error
+                details: error,
+                recovery: 'Try reconnecting to the tab using start_monitoring or refresh the page and try again.'
               }
             }
           };
@@ -4318,26 +4319,38 @@ export class ChromeDevToolsMCPServer {
 
       // Process HTML document
       if (fileTypes.includes('html')) {
-        // Use DOM.getDocument to demonstrate DOM agent usage (v1.1.1-BF1.1)
-        const domDocument = await client.DOM.getDocument({ depth: 0 });
-        
         const htmlFile: any = {
           type: 'html',
           url: pageData.documentURL,
           inline: false,
-          title: pageData.title,
-          domNodeId: domDocument.root.nodeId // Store DOM node ID
+          title: pageData.title
         };
+        
+        // Try to use DOM.getDocument but handle failures gracefully (v1.1.1-BF1.3)
+        try {
+          const domDocument = await client.DOM.getDocument({ depth: 0 });
+          htmlFile.domNodeId = domDocument.root.nodeId; // Store DOM node ID if available
+        } catch (domError) {
+          // DOM.getDocument failed - log but continue
+          htmlFile.domError = `Failed to get DOM document: ${domError instanceof Error ? domError.message : 'Unknown error'}`;
+          if (LOG_LEVEL === 'debug') {
+            console.log(`DOM.getDocument failed for tab ${tabId}:`, domError);
+          }
+        }
 
         if (includeContent) {
-          const htmlContent = await client.Runtime.evaluate({
-            expression: 'document.documentElement.outerHTML',
-            returnByValue: true
-          });
-          
-          if (htmlContent.result.value) {
-            htmlFile.content = htmlContent.result.value;
-            htmlFile.size = htmlContent.result.value.length;
+          try {
+            const htmlContent = await client.Runtime.evaluate({
+              expression: 'document.documentElement.outerHTML',
+              returnByValue: true
+            });
+            
+            if (htmlContent.result.value) {
+              htmlFile.content = htmlContent.result.value;
+              htmlFile.size = htmlContent.result.value.length;
+            }
+          } catch (error) {
+            htmlFile.contentError = 'Failed to retrieve HTML content';
           }
         }
 
