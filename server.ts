@@ -628,6 +628,60 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId']
         }
+      },
+      {
+        name: 'monitor_events',
+        description: 'Monitor and capture real-time events from a Chrome tab using Chrome DevTools Protocol. Tracks DOM mutations, console logs, network activity, script execution, performance metrics, security events, and storage changes.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to monitor',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            eventTypes: {
+              type: 'array',
+              items: {
+                type: 'string',
+                enum: ['dom', 'console', 'network', 'script', 'performance', 'security', 'storage', 'all']
+              },
+              description: 'Types of events to monitor. dom: DOM mutations, console: Console logs, network: Network activity, script: Script execution, performance: Performance events, security: Security events, storage: Storage changes, all: All event types'
+            },
+            filters: {
+              type: 'object',
+              properties: {
+                url: {
+                  type: 'string',
+                  description: 'Filter events by URL pattern'
+                },
+                eventName: {
+                  type: 'string',
+                  description: 'Filter by specific event name'
+                },
+                severity: {
+                  type: 'string',
+                  enum: ['verbose', 'info', 'warning', 'error'],
+                  description: 'Minimum severity level for console events'
+                }
+              },
+              description: 'Optional filters to apply to events'
+            },
+            bufferSize: {
+              type: 'integer',
+              minimum: 10,
+              maximum: 10000,
+              default: 100,
+              description: 'Maximum number of events to buffer (when not in real-time mode)'
+            },
+            realtime: {
+              type: 'boolean',
+              default: true,
+              description: 'Whether to stream events in real-time or buffer them'
+            }
+          },
+          required: ['tabId', 'eventTypes']
+        }
       }
     ];
     
@@ -716,6 +770,9 @@ export class ChromeDevToolsMCPServer {
       
       case 'analyze_errors':
         return await this.analyzeErrors(parameters);
+      
+      case 'monitor_events':
+        return await this.monitorEvents(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -5915,6 +5972,46 @@ export class ChromeDevToolsMCPServer {
     };
     
     return enhancedError;
+  }
+
+  /**
+   * Monitor and capture real-time events from a tab
+   * Provides comprehensive event tracking across multiple domains
+   */
+  public async monitorEvents(parameters: any): Promise<any> {
+    const { tabId, eventTypes: _eventTypes, filters: _filters, bufferSize: _bufferSize, realtime: _realtime } = parameters;
+    
+    // Check if event monitoring is enabled
+    const monitoringEnabled = process.env.EVENT_MONITORING_ENABLED !== 'false';
+    if (!monitoringEnabled) {
+      return {
+        success: false,
+        message: 'Event monitoring is disabled. Set EVENT_MONITORING_ENABLED=true to enable event monitoring features.',
+        eventMonitoring: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Event monitoring is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // For now, return a stub implementation
+    // This will be fully implemented in Task 20.2
+    return {
+      success: false,
+      message: 'monitor_events is not yet implemented. This tool will be available in Task 20.2.',
+      eventMonitoring: {
+        tabId,
+        timestamp: new Date().toISOString(),
+        error: {
+          type: 'NotImplemented',
+          message: 'Tool implementation pending'
+        }
+      }
+    };
   }
 }
 
