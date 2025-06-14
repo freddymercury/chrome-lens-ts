@@ -4701,7 +4701,7 @@ export class ChromeDevToolsMCPServer {
    * Uses Chrome DevTools Protocol Runtime domain to evaluate and inspect objects
    */
   public async inspectVariables(parameters: any): Promise<any> {
-    const { tabId, objectId: _objectId, expression: _expression, callFrameId: _callFrameId, depth: _depth } = parameters;
+    const { tabId, objectId, expression, callFrameId, depth = 2 } = parameters;
     
     // Check if runtime inspection is enabled
     const inspectionEnabled = process.env.RUNTIME_INSPECTION_ENABLED !== 'false';
@@ -4720,20 +4720,209 @@ export class ChromeDevToolsMCPServer {
       };
     }
     
-    // For now, return a stub implementation
-    // This will be fully implemented in Task 18.2
-    return {
-      success: false,
-      message: 'inspect_variables is not yet implemented. This tool will be available in Task 18.2.',
-      variableInspection: {
-        tabId,
-        timestamp: new Date().toISOString(),
-        error: {
-          type: 'NotImplemented',
-          message: 'Tool implementation pending'
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    // Validate that either objectId or expression is provided
+    if (!objectId && !expression) {
+      return {
+        success: false,
+        error: 'Either objectId or expression must be provided',
+        variableInspection: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'ValidationError',
+            message: 'Either objectId or expression parameter is required'
+          }
+        }
+      };
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          variableInspection: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
+      }
+      
+      let result: any;
+      
+      if (expression) {
+        // Evaluate expression
+        if (callFrameId) {
+          // Evaluate in call frame context (when paused at breakpoint)
+          result = await client.Debugger.evaluateOnCallFrame({
+            callFrameId,
+            expression,
+            returnByValue: false,
+            generatePreview: true
+          });
+        } else {
+          // Evaluate in global context
+          result = await client.Runtime.evaluate({
+            expression,
+            returnByValue: false,
+            generatePreview: true
+          });
+        }
+        
+        // Check for evaluation errors
+        if (result.exceptionDetails) {
+          return {
+            success: false,
+            error: result.exceptionDetails.text || 'Evaluation error',
+            variableInspection: {
+              tabId,
+              expression,
+              timestamp,
+              error: {
+                type: 'EvaluationError',
+                message: result.exceptionDetails.text,
+                exception: result.exceptionDetails.exception
+              }
+            }
+          };
+        }
+        
+        // If result is an object and depth > 0, get its properties
+        if (result.result.objectId && depth > 0) {
+          const properties = await this.getObjectProperties(
+            client,
+            result.result.objectId,
+            depth,
+            new Set()
+          );
+          result.result.properties = properties;
+        }
+        
+        return {
+          success: true,
+          message: `Evaluated expression: ${expression}`,
+          variableInspection: {
+            tabId,
+            expression,
+            timestamp,
+            result: result.result
+          }
+        };
+        
+      } else {
+        // Inspect object by ID
+        const properties = await this.getObjectProperties(
+          client,
+          objectId,
+          depth,
+          new Set()
+        );
+        
+        return {
+          success: true,
+          message: `Inspected object: ${objectId}`,
+          variableInspection: {
+            tabId,
+            objectId,
+            timestamp,
+            properties
+          }
+        };
+      }
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to inspect variables for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        variableInspection: {
+          tabId,
+          timestamp,
+          error: {
+            type: 'InspectionError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+  
+  /**
+   * Recursively get object properties up to specified depth
+   */
+  private async getObjectProperties(
+    client: any,
+    objectId: string,
+    depth: number,
+    visitedObjects: Set<string>
+  ): Promise<any[]> {
+    // Check for circular references
+    if (visitedObjects.has(objectId)) {
+      return [{
+        name: '[[Circular]]',
+        value: {
+          type: 'object',
+          objectId,
+          description: 'Circular reference',
+          circular: true
+        }
+      }];
+    }
+    
+    visitedObjects.add(objectId);
+    
+    try {
+      const response = await client.Runtime.getProperties({
+        objectId,
+        ownProperties: true,
+        generatePreview: true
+      });
+      
+      const properties = response.result || [];
+      
+      // If depth > 1, recursively get nested object properties
+      if (depth > 1) {
+        for (const prop of properties) {
+          if (prop.value && prop.value.objectId && prop.value.type === 'object') {
+            prop.value.properties = await this.getObjectProperties(
+              client,
+              prop.value.objectId,
+              depth - 1,
+              new Set(visitedObjects)
+            );
+          }
         }
       }
-    };
+      
+      return properties;
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to get properties for object ${objectId}:`, error.message);
+      }
+      return [];
+    }
   }
 }
 
