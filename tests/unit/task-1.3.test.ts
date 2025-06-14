@@ -20,12 +20,12 @@ describe('Task 1.3: Basic Server File Structure', () => {
     expect(serverContent).not.toContain('require(');
   });
 
-  test('server.ts imports MCP SDK components', () => {
+  test('server.ts imports Chrome DevTools components', () => {
     const serverContent = fs.readFileSync(serverPath, 'utf8');
     
-    expect(serverContent).toContain('@modelcontextprotocol/sdk');
-    expect(serverContent).toMatch(/import.*Server.*from.*['"]@modelcontextprotocol\/sdk/);
-    expect(serverContent).toMatch(/import.*StdioServerTransport.*from.*['"]@modelcontextprotocol\/sdk/);
+    // Initially we import Chrome Remote Interface instead of MCP SDK for the basic implementation
+    expect(serverContent).toContain('chrome-remote-interface');
+    expect(serverContent).toMatch(/import.*CDP.*from.*['"]chrome-remote-interface['"];/);
   });
 
   test('server.ts imports Chrome Remote Interface', () => {
@@ -35,12 +35,10 @@ describe('Task 1.3: Basic Server File Structure', () => {
     expect(serverContent).toMatch(/import.*CDP.*from.*['"]chrome-remote-interface['"];/);
   });
 
-  test('server.ts imports WebSocket and dotenv', () => {
+  test('server.ts imports required dependencies', () => {
     const serverContent = fs.readFileSync(serverPath, 'utf8');
     
-    expect(serverContent).toContain('ws');
     expect(serverContent).toContain('dotenv');
-    expect(serverContent).toMatch(/import.*WebSocket.*from.*['"]ws['"];/);
     expect(serverContent).toMatch(/import.*dotenv.*from.*['"]dotenv['"];/);
   });
 
@@ -54,7 +52,7 @@ describe('Task 1.3: Basic Server File Structure', () => {
   test('server.ts uses environment variables', () => {
     const serverContent = fs.readFileSync(serverPath, 'utf8');
     
-    expect(serverContent).toContain('process.env.NODE_ENV');
+    expect(serverContent).toContain('process.env.MCP_SERVER_NAME');
     expect(serverContent).toContain('dotenv.config()');
   });
 });

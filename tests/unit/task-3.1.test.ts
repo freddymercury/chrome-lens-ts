@@ -29,12 +29,12 @@ describe('Task 3.1: Empty Tool Handler Setup', () => {
     }).not.toThrow();
   });
 
-  test('listTools handler returns empty array initially', async () => {
+  test('listTools handler returns tools array after setup', async () => {
     server.setupToolHandlers();
     
     const tools = await server.listTools();
     expect(Array.isArray(tools)).toBe(true);
-    expect(tools).toHaveLength(0);
+    expect(tools.length).toBeGreaterThan(0);
   });
 
   test('listTools method exists', () => {
@@ -45,7 +45,17 @@ describe('Task 3.1: Empty Tool Handler Setup', () => {
     server.setupToolHandlers();
     
     const tools = await server.listTools();
-    expect(tools).toEqual([]);
+    expect(Array.isArray(tools)).toBe(true);
+    
+    // Each tool should have proper MCP format
+    tools.forEach(tool => {
+      expect(tool).toHaveProperty('name');
+      expect(tool).toHaveProperty('description');
+      expect(tool).toHaveProperty('inputSchema');
+      expect(typeof tool.name).toBe('string');
+      expect(typeof tool.description).toBe('string');
+      expect(typeof tool.inputSchema).toBe('object');
+    });
   });
 
   test('setupToolHandlers respects MAX_TOOLS environment variable', () => {

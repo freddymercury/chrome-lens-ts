@@ -150,28 +150,40 @@ export class ChromeDevToolsMCPServer {
       console.log(`Setting up tool handlers (max tools: ${MAX_TOOLS})...`);
     }
     
-    // Initialize tools array with connect_to_chrome tool
+    // Define common Chrome connection parameters schema
+    const chromeConnectionSchema = {
+      port: {
+        type: 'integer',
+        description: 'Port number for Chrome DevTools Protocol',
+        default: CHROME_DEBUG_PORT,
+        minimum: 1024,
+        maximum: 65535
+      },
+      host: {
+        type: 'string',
+        description: 'Host address for Chrome DevTools Protocol',
+        default: CHROME_DEBUG_HOST,
+        pattern: '^[a-zA-Z0-9.-]+$'
+      }
+    };
+
+    // Initialize tools array with Chrome DevTools tools
     this.tools = [
       {
         name: 'connect_to_chrome',
         description: 'Connect to Chrome DevTools instance for debugging and monitoring. Establishes a connection to Chrome\'s remote debugging protocol.',
         inputSchema: {
           type: 'object',
-          properties: {
-            port: {
-              type: 'integer',
-              description: 'Port number for Chrome DevTools Protocol',
-              default: CHROME_DEBUG_PORT,
-              minimum: 1024,
-              maximum: 65535
-            },
-            host: {
-              type: 'string',
-              description: 'Host address for Chrome DevTools Protocol',
-              default: CHROME_DEBUG_HOST,
-              pattern: '^[a-zA-Z0-9.-]+$'
-            }
-          },
+          properties: chromeConnectionSchema,
+          required: []
+        }
+      },
+      {
+        name: 'list_tabs',
+        description: 'List all open Chrome tabs with their IDs, titles, and URLs. Retrieves information about all available tabs from Chrome DevTools.',
+        inputSchema: {
+          type: 'object',
+          properties: chromeConnectionSchema,
           required: []
         }
       }
@@ -217,6 +229,9 @@ export class ChromeDevToolsMCPServer {
     switch (name) {
       case 'connect_to_chrome':
         return await this.connectToChrome(parameters);
+      
+      case 'list_tabs':
+        return await this.listTabs(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -369,6 +384,85 @@ export class ChromeDevToolsMCPServer {
           port,
           error: error.message
         }
+      };
+    }
+  }
+
+  /**
+   * List all available Chrome tabs
+   * Returns formatted list of Chrome tabs with their IDs, titles, and URLs
+   */
+  public async listTabs(parameters: any): Promise<any> {
+    if (LOG_LEVEL === 'debug') {
+      console.log('Listing Chrome tabs:', parameters);
+    }
+
+    // Extract and validate parameters before applying defaults
+    const rawHost = parameters.host;
+    const rawPort = parameters.port;
+
+    // Validate host parameter if provided
+    if (rawHost !== undefined) {
+      if (typeof rawHost !== 'string' || rawHost.trim() === '') {
+        throw new Error('Invalid host: Host must be a non-empty string.');
+      }
+      if (!/^[a-zA-Z0-9.-]+$/.test(rawHost)) {
+        throw new Error(`Invalid host format: ${rawHost}. Host must contain only alphanumeric characters, dots, and hyphens.`);
+      }
+    }
+
+    // Apply defaults after validation
+    const port = rawPort || CHROME_DEBUG_PORT;
+    const host = rawHost || CHROME_DEBUG_HOST;
+
+    // Validate port
+    if (port < 1024 || port > 65535) {
+      throw new Error(`Invalid port: ${port}. Port must be between 1024 and 65535.`);
+    }
+
+    try {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Attempting to list tabs from Chrome at ${host}:${port}`);
+      }
+
+      // Get Chrome tabs using CDP.List()
+      const tabs = await CDP.List({ host, port });
+
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Successfully retrieved ${tabs.length} tabs from Chrome.`);
+      }
+
+      return {
+        success: true,
+        message: `Successfully retrieved ${tabs.length} tabs from Chrome DevTools at ${host}:${port}`,
+        connection: {
+          host,
+          port,
+          tabCount: tabs.length
+        },
+        tabs: tabs.map(tab => ({
+          id: tab.id,
+          title: tab.title,
+          url: tab.url,
+          type: tab.type,
+          webSocketDebuggerUrl: tab.webSocketDebuggerUrl,
+          devtoolsFrontendUrl: tab.devtoolsFrontendUrl
+        }))
+      };
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log('Failed to list Chrome tabs:', error.message);
+      }
+
+      return {
+        success: false,
+        message: `Failed to list tabs from Chrome DevTools at ${host}:${port}: ${error.message}`,
+        connection: {
+          host,
+          port,
+          error: error.message
+        },
+        tabs: []
       };
     }
   }

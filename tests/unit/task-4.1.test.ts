@@ -73,10 +73,12 @@ describe('Task 4.1: connect_to_chrome Tool Definition', () => {
     expect(connectTool.description.toLowerCase()).toMatch(/connect|establish|attach/);
   });
 
-  test('only one tool exists initially (connect_to_chrome)', async () => {
+  test('connect_to_chrome tool exists in tools list', async () => {
     const tools = await server.listTools();
-    expect(tools).toHaveLength(1);
-    expect(tools[0].name).toBe('connect_to_chrome');
+    expect(tools.length).toBeGreaterThan(0);
+    
+    const connectTool = tools.find(tool => tool.name === 'connect_to_chrome');
+    expect(connectTool).toBeDefined();
   });
 
   test('tool uses environment variable defaults', async () => {
