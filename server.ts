@@ -4971,7 +4971,13 @@ export class ChromeDevToolsMCPServer {
    * Provides comprehensive analysis of variables, objects, and memory usage
    */
   public async analyzeRuntimeState(parameters: any): Promise<any> {
-    const { tabId, scope: _scope, includePrototype: _includePrototype, includeGetters: _includeGetters, maxResults: _maxResults } = parameters;
+    const { 
+      tabId, 
+      scope = 'all', 
+      includePrototype = false, 
+      includeGetters = false, 
+      maxResults = 100 
+    } = parameters;
     
     // Check if state analysis is enabled
     const analysisEnabled = process.env.STATE_ANALYSIS_ENABLED !== 'false';
@@ -4990,20 +4996,310 @@ export class ChromeDevToolsMCPServer {
       };
     }
     
-    // For now, return a stub implementation
-    // This will be fully implemented in Task 18.4
-    return {
-      success: false,
-      message: 'analyze_runtime_state is not yet implemented. This tool will be available in Task 18.4.',
-      stateAnalysis: {
-        tabId,
-        timestamp: new Date().toISOString(),
-        error: {
-          type: 'NotImplemented',
-          message: 'Tool implementation pending'
-        }
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          stateAnalysis: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
       }
-    };
+      
+      const analysis: any = {
+        tabId,
+        timestamp,
+        scope,
+        summary: {
+          totalObjects: 0,
+          analyzedObjects: 0,
+          truncated: false
+        }
+      };
+      
+      // Analyze based on scope
+      if (scope === 'global' || scope === 'all') {
+        analysis.globalState = await this.analyzeGlobalScope(
+          client,
+          includePrototype,
+          includeGetters,
+          maxResults
+        );
+        analysis.summary.totalObjects += analysis.globalState.totalProperties || 0;
+        analysis.summary.analyzedObjects += analysis.globalState.properties?.length || 0;
+      }
+      
+      // Get debugger state for local/closure analysis
+      const debuggerState = this.getDebuggerState(tabId);
+      
+      if ((scope === 'local' || scope === 'all') && debuggerState.isPaused) {
+        analysis.localState = await this.analyzeLocalScope(
+          client,
+          debuggerState,
+          includePrototype,
+          maxResults
+        );
+        analysis.summary.totalObjects += analysis.localState.totalVariables || 0;
+        analysis.summary.analyzedObjects += analysis.localState.variables?.length || 0;
+      }
+      
+      if ((scope === 'closure' || scope === 'all') && debuggerState.isPaused) {
+        analysis.closureState = await this.analyzeClosureScope(
+          client,
+          debuggerState,
+          includePrototype,
+          maxResults
+        );
+        analysis.summary.totalObjects += analysis.closureState.totalVariables || 0;
+        analysis.summary.analyzedObjects += analysis.closureState.closures?.reduce(
+          (sum: number, c: any) => sum + (c.variables?.length || 0), 0
+        ) || 0;
+      }
+      
+      // Get memory usage if analyzing all
+      if (scope === 'all') {
+        analysis.memoryUsage = await this.getMemoryUsage(client);
+      }
+      
+      analysis.summary.truncated = analysis.summary.analyzedObjects < analysis.summary.totalObjects;
+      
+      return {
+        success: true,
+        message: `Analyzed ${scope} runtime state for tab ${tabId}`,
+        stateAnalysis: analysis
+      };
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to analyze runtime state for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        stateAnalysis: {
+          tabId,
+          timestamp,
+          error: {
+            type: 'AnalysisError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+  
+  /**
+   * Analyze global scope (window object and global variables)
+   */
+  private async analyzeGlobalScope(
+    client: any,
+    includePrototype: boolean,
+    includeGetters: boolean,
+    maxResults: number
+  ): Promise<any> {
+    try {
+      // Evaluate window object
+      const globalResult = await client.Runtime.evaluate({
+        expression: 'window',
+        returnByValue: false
+      });
+      
+      if (!globalResult.result?.objectId) {
+        return { error: 'Could not access global scope' };
+      }
+      
+      // Get global properties
+      const propsResponse = await client.Runtime.getProperties({
+        objectId: globalResult.result.objectId,
+        ownProperties: !includePrototype,
+        accessorPropertiesOnly: false,
+        generatePreview: true
+      });
+      
+      const properties = propsResponse.result || [];
+      const totalProperties = properties.length;
+      
+      // Limit results
+      const limitedProps = properties.slice(0, maxResults);
+      
+      // Get lexical scope names (let, const at global level)
+      let lexicalNames: string[] = [];
+      try {
+        const lexicalResponse = await client.Runtime.globalLexicalScopeNames();
+        lexicalNames = lexicalResponse.names || [];
+      } catch (e) {
+        // Not all Chrome versions support this
+      }
+      
+      return {
+        type: 'global',
+        properties: limitedProps,
+        totalProperties,
+        lexicalNames,
+        truncated: limitedProps.length < totalProperties
+      };
+      
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  }
+  
+  /**
+   * Analyze local scope (current call frame variables)
+   */
+  private async analyzeLocalScope(
+    client: any,
+    debuggerState: any,
+    includePrototype: boolean,
+    maxResults: number
+  ): Promise<any> {
+    try {
+      const callFrame = debuggerState.callFrames?.[0];
+      if (!callFrame) {
+        return { error: 'No call frame available' };
+      }
+      
+      // Find local scope
+      const localScope = callFrame.scopeChain?.find((s: any) => s.type === 'local');
+      if (!localScope?.object?.objectId) {
+        return { error: 'No local scope found' };
+      }
+      
+      // Get local variables
+      const propsResponse = await client.Runtime.getProperties({
+        objectId: localScope.object.objectId,
+        ownProperties: true,
+        generatePreview: true
+      });
+      
+      const variables = propsResponse.result || [];
+      const totalVariables = variables.length;
+      const limitedVars = variables.slice(0, maxResults);
+      
+      return {
+        type: 'local',
+        callFrame: callFrame.functionName || 'anonymous',
+        variables: limitedVars,
+        totalVariables,
+        truncated: limitedVars.length < totalVariables
+      };
+      
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  }
+  
+  /**
+   * Analyze closure scope (captured variables)
+   */
+  private async analyzeClosureScope(
+    client: any,
+    debuggerState: any,
+    includePrototype: boolean,
+    maxResults: number
+  ): Promise<any> {
+    try {
+      const callFrame = debuggerState.callFrames?.[0];
+      if (!callFrame) {
+        return { error: 'No call frame available' };
+      }
+      
+      // Find all closure scopes
+      const closureScopes = callFrame.scopeChain?.filter((s: any) => s.type === 'closure') || [];
+      if (closureScopes.length === 0) {
+        return { type: 'closure', closures: [], totalVariables: 0 };
+      }
+      
+      const closures = [];
+      let totalVariables = 0;
+      let analyzedVariables = 0;
+      
+      for (const closureScope of closureScopes) {
+        if (!closureScope.object?.objectId) continue;
+        
+        const propsResponse = await client.Runtime.getProperties({
+          objectId: closureScope.object.objectId,
+          ownProperties: true,
+          generatePreview: true
+        });
+        
+        const variables = propsResponse.result || [];
+        totalVariables += variables.length;
+        
+        // Apply limit across all closures
+        const remainingSlots = Math.max(0, maxResults - analyzedVariables);
+        const limitedVars = variables.slice(0, remainingSlots);
+        analyzedVariables += limitedVars.length;
+        
+        closures.push({
+          name: closureScope.name || 'closure',
+          variables: limitedVars
+        });
+        
+        if (analyzedVariables >= maxResults) break;
+      }
+      
+      return {
+        type: 'closure',
+        closures,
+        totalVariables,
+        truncated: analyzedVariables < totalVariables
+      };
+      
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  }
+  
+  /**
+   * Get memory usage statistics
+   */
+  private async getMemoryUsage(client: any): Promise<any> {
+    try {
+      const memoryResult = await client.Runtime.evaluate({
+        expression: 'performance.memory',
+        returnByValue: true
+      });
+      
+      if (memoryResult.result?.value) {
+        return memoryResult.result.value;
+      }
+      
+      // Fallback: extract from preview
+      if (memoryResult.result?.preview?.properties) {
+        const memoryData: any = {};
+        for (const prop of memoryResult.result.preview.properties) {
+          memoryData[prop.name] = parseInt(prop.value) || 0;
+        }
+        return memoryData;
+      }
+      
+      return null;
+      
+    } catch (error: any) {
+      return null;
+    }
   }
 }
 
