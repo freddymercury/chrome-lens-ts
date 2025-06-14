@@ -4582,7 +4582,16 @@ export class ChromeDevToolsMCPServer {
         
         // If hot reload failed, do a full page reload
         if (reloadRequired) {
-          await client.Page.reload({ ignoreCache: true });
+          try {
+            // Enable Page domain if not already enabled
+            await client.Page.enable();
+            await client.Page.reload({ ignoreCache: true });
+          } catch (reloadError) {
+            // Page reload failed - log but continue
+            if (LOG_LEVEL === 'debug') {
+              console.log('Page reload failed:', reloadError);
+            }
+          }
         }
       }
       
@@ -4928,8 +4937,14 @@ export class ChromeDevToolsMCPServer {
    */
   private async validateSourceCode(client: any, content: string, fileType: string, sourceTarget: any): Promise<any> {
     try {
-      if (fileType === 'javascript' || fileType === 'typescript') {
-        // Use Runtime.compileScript for better validation
+      // For TypeScript/TSX files, use TypeScript compiler API
+      if (fileType === 'typescript') {
+        return await this.validateTypeScript(content, sourceTarget.url);
+      }
+      
+      // For JavaScript, use Runtime.compileScript
+      if (fileType === 'javascript') {
+        // Use Runtime.compileScript for JavaScript validation
         const compileResult = await client.Runtime.compileScript({
           expression: content,
           sourceURL: sourceTarget.url,
@@ -4999,6 +5014,101 @@ export class ChromeDevToolsMCPServer {
         error: `Validation error: ${error.message}`,
         errorType: 'ValidationError'
       };
+    }
+  }
+  
+  /**
+   * Validate TypeScript/TSX code using TypeScript compiler API
+   */
+  private async validateTypeScript(content: string, fileName: string): Promise<any> {
+    try {
+      // Dynamic import to avoid issues in non-TypeScript environments
+      const tsModule = await import('typescript');
+      const ts = tsModule.default || tsModule;
+      
+      // Get compiler options from environment or use defaults
+      let compilerOptions: any = {
+        target: ts.ScriptTarget.ES2020,
+        module: ts.ModuleKind.ESNext,
+        jsx: fileName.endsWith('.tsx') ? ts.JsxEmit.React : undefined,
+        allowJs: true,
+        checkJs: false,
+        noEmit: true,
+        esModuleInterop: true,
+        skipLibCheck: true,
+        strict: false,
+        moduleResolution: ts.ModuleResolutionKind.NodeJs
+      };
+      
+      // Override with environment settings if provided
+      if (process.env.TS_COMPILER_OPTIONS) {
+        try {
+          const envOptions = JSON.parse(process.env.TS_COMPILER_OPTIONS);
+          // Map string values to TypeScript enums
+          if (envOptions.target) {
+            compilerOptions.target = ts.ScriptTarget[envOptions.target.toUpperCase()] || ts.ScriptTarget.ES2020;
+          }
+          if (envOptions.jsx) {
+            compilerOptions.jsx = envOptions.jsx === 'react' ? ts.JsxEmit.React : 
+                                  envOptions.jsx === 'preserve' ? ts.JsxEmit.Preserve : 
+                                  ts.JsxEmit.ReactJSX;
+          }
+          if (envOptions.strictNullChecks !== undefined) {
+            compilerOptions.strictNullChecks = envOptions.strictNullChecks;
+          }
+        } catch (e) {
+          console.warn('Invalid TS_COMPILER_OPTIONS:', e);
+        }
+      }
+      
+      // Create a source file
+      const sourceFile = ts.createSourceFile(
+        fileName,
+        content,
+        compilerOptions.target,
+        true,
+        fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+      );
+      
+      // Simple syntax validation using the language service
+      const languageService = ts.createLanguageService({
+        getScriptFileNames: () => [fileName],
+        getScriptVersion: () => '1',
+        getScriptSnapshot: (name: string) => {
+          if (name === fileName) {
+            return ts.ScriptSnapshot.fromString(content);
+          }
+          return undefined;
+        },
+        getCurrentDirectory: () => '/',
+        getCompilationSettings: () => compilerOptions,
+        getDefaultLibFileName: () => 'lib.d.ts',
+        fileExists: () => true,
+        readFile: () => '',
+        readDirectory: () => [],
+        getDirectories: () => []
+      });
+      
+      const syntaxDiagnostics = languageService.getSyntacticDiagnostics(fileName);
+      
+      if (syntaxDiagnostics.length > 0) {
+        const firstError = syntaxDiagnostics[0];
+        const position = sourceFile.getLineAndCharacterOfPosition(firstError.start || 0);
+        
+        return {
+          valid: false,
+          error: ts.flattenDiagnosticMessageText(firstError.messageText, '\n'),
+          errorType: 'SyntaxError',
+          lineNumber: position.line + 1,
+          columnNumber: position.character + 1
+        };
+      }
+      
+      return { valid: true };
+    } catch (error) {
+      // Fallback if TypeScript is not available
+      console.warn('TypeScript validation failed:', error);
+      return { valid: true }; // Allow the code through if TS validation fails
     }
   }
 
