@@ -3549,24 +3549,50 @@ export class ChromeDevToolsMCPServer {
         }
       }
       
-      // Validate syntax if requested (basic check for now)
+      // Check content size limits (10MB max by default)
+      const maxSize = parseInt(process.env.MAX_SOURCE_SIZE || '10485760', 10);
+      const contentSize = new TextEncoder().encode(newContent).length;
+      if (contentSize > maxSize) {
+        return {
+          success: false,
+          message: `Source code too large: ${contentSize} bytes (max: ${maxSize})`,
+          error: 'Content size exceeds limit',
+          sourceModification: {
+            tabId,
+            sourceId,
+            scriptId: sourceTarget.scriptId,
+            contentSize,
+            timestamp: new Date().toISOString(),
+            error: {
+              type: 'SizeLimitExceeded',
+              message: `Content size ${contentSize} exceeds maximum ${maxSize}`
+            }
+          }
+        };
+      }
+      
+      // Determine file type for appropriate validation
+      const fileType = this.getFileType(sourceTarget.url);
+      
+      // Validate syntax if requested
       if (validateSyntax) {
-        try {
-          // Basic syntax check using Function constructor
-          new Function(newContent);
-        } catch (syntaxError: any) {
+        const validationResult = await this.validateSourceCode(client, newContent, fileType, sourceTarget);
+        if (!validationResult.valid) {
           return {
             success: false,
-            message: `Syntax validation failed: ${syntaxError.message}`,
-            error: syntaxError.message,
+            message: `Validation failed: ${validationResult.error}`,
+            error: validationResult.error,
             sourceModification: {
               tabId,
               sourceId,
               scriptId: sourceTarget.scriptId,
+              fileType,
               timestamp: new Date().toISOString(),
               error: {
-                type: 'SyntaxError',
-                message: syntaxError.message
+                type: validationResult.errorType || 'ValidationError',
+                message: validationResult.error,
+                lineNumber: validationResult.lineNumber,
+                columnNumber: validationResult.columnNumber
               }
             }
           };
@@ -3636,6 +3662,30 @@ export class ChromeDevToolsMCPServer {
         sourceInfo.isModified = true;
       }
       
+      // Check for runtime errors after modification
+      let warnings: any[] = [];
+      if (process.env.CODE_VALIDATION_STRICT === 'true') {
+        try {
+          const runtimeCheck = await client.Runtime.evaluate({
+            expression: `(function() { try { return { success: true }; } catch(e) { return { success: false, error: e.toString() }; } })()`,
+            returnByValue: true
+          });
+          
+          if (runtimeCheck.exceptionDetails) {
+            warnings.push({
+              type: 'RuntimeWarning',
+              message: 'Potential runtime error detected after modification',
+              details: runtimeCheck.exceptionDetails
+            });
+          }
+        } catch (error: any) {
+          // Runtime check failed, but modification succeeded
+          if (LOG_LEVEL === 'debug') {
+            console.log('Runtime validation check failed:', error.message);
+          }
+        }
+      }
+      
       return {
         success: true,
         message: `Successfully modified source: ${sourceTarget.url}`,
@@ -3646,11 +3696,14 @@ export class ChromeDevToolsMCPServer {
           sourceId,
           scriptId: sourceTarget.scriptId,
           url: sourceTarget.url,
+          fileType,
+          contentSize,
           timestamp: new Date().toISOString(),
           originalStored: !!originalSource,
           hotReloadAttempted: hotReload,
           reloadRequired,
-          affectedModules
+          affectedModules,
+          warnings: warnings.length > 0 ? warnings : undefined
         }
       };
       
@@ -3884,6 +3937,97 @@ export class ChromeDevToolsMCPServer {
       if (LOG_LEVEL === 'debug') {
         console.log(`Cleaned up source registry for tab ${tabId}`);
       }
+    }
+  }
+
+  /**
+   * Get file type from URL
+   */
+  private getFileType(url: string): string {
+    if (url.endsWith('.js') || url.endsWith('.mjs')) return 'javascript';
+    if (url.endsWith('.ts') || url.endsWith('.tsx')) return 'typescript';
+    if (url.endsWith('.css')) return 'css';
+    if (url.endsWith('.html') || url.endsWith('.htm')) return 'html';
+    if (url.endsWith('.json')) return 'json';
+    return 'unknown';
+  }
+
+  /**
+   * Validate source code based on file type
+   */
+  private async validateSourceCode(client: any, content: string, fileType: string, sourceTarget: any): Promise<any> {
+    try {
+      if (fileType === 'javascript' || fileType === 'typescript') {
+        // Use Runtime.compileScript for better validation
+        const compileResult = await client.Runtime.compileScript({
+          expression: content,
+          sourceURL: sourceTarget.url,
+          persistScript: false
+        });
+        
+        if (compileResult.exceptionDetails) {
+          return {
+            valid: false,
+            error: compileResult.exceptionDetails.text || 'Compilation failed',
+            errorType: 'SyntaxError',
+            lineNumber: compileResult.exceptionDetails.lineNumber,
+            columnNumber: compileResult.exceptionDetails.columnNumber
+          };
+        }
+        
+        return { valid: true };
+      }
+      
+      if (fileType === 'css') {
+        // Basic CSS validation - check for common syntax errors
+        // Remove comments for validation
+        const cleanCSS = content.replace(/\/\*[\s\S]*?\*\//g, '');
+        
+        // Check for empty values
+        if (cleanCSS.match(/:\s*;/)) {
+          return {
+            valid: false,
+            error: 'CSS contains empty property values',
+            errorType: 'CSSError'
+          };
+        }
+        
+        // Check for unclosed braces
+        const openBraces = (cleanCSS.match(/{/g) || []).length;
+        const closeBraces = (cleanCSS.match(/}/g) || []).length;
+        if (openBraces !== closeBraces) {
+          return {
+            valid: false,
+            error: `CSS has ${openBraces} opening braces but ${closeBraces} closing braces`,
+            errorType: 'CSSError'
+          };
+        }
+        
+        return { valid: true };
+      }
+      
+      if (fileType === 'json') {
+        try {
+          JSON.parse(content);
+          return { valid: true };
+        } catch (error: any) {
+          return {
+            valid: false,
+            error: `JSON parse error: ${error.message}`,
+            errorType: 'JSONError'
+          };
+        }
+      }
+      
+      // For other file types, skip validation
+      return { valid: true };
+      
+    } catch (error: any) {
+      return {
+        valid: false,
+        error: `Validation error: ${error.message}`,
+        errorType: 'ValidationError'
+      };
     }
   }
 }
