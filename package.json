@@ -2,12 +2,13 @@
   "name": "chrome-lens-ts",
   "version": "0.1.0",
   "description": "Chrome DevTools MCP Server - Direct access to Chrome's DevTools Protocol for granular real-time debugging",
+  "type": "module",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
     "dev": "ts-node server.ts",
     "test": "jest",
-    "lint": "eslint src/**/*.ts tests/**/*.ts",
+    "lint": "eslint *.ts tests/**/*.ts",
     "typecheck": "tsc --noEmit",
     "start": "node dist/server.js"
   },
@@ -36,7 +37,8 @@
     "@types/ws": "^8.5.13"
   },
   "jest": {
-    "preset": "ts-jest",
+    "preset": "ts-jest/presets/default-esm",
+    "extensionsToTreatAsEsm": [".ts"],
     "testEnvironment": "node",
     "coverageDirectory": "coverage",
     "collectCoverageFrom": [

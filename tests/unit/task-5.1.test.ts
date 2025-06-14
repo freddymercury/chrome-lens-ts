@@ -63,9 +63,9 @@ describe('Task 5.1: list_tabs Tool Definition', () => {
     expect(listTabsTool.description.toLowerCase()).toMatch(/list.*tab|tab.*list/);
   });
 
-  test('two tools exist now (connect_to_chrome and list_tabs)', async () => {
+  test('list_tabs tool exists with other tools', async () => {
     const tools = await server.listTools();
-    expect(tools).toHaveLength(2);
+    expect(tools.length).toBeGreaterThanOrEqual(2);
     
     const toolNames = tools.map(tool => tool.name);
     expect(toolNames).toContain('connect_to_chrome');

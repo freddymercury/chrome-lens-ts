@@ -7,7 +7,7 @@ declare module 'chrome-remote-interface' {
     alterPath?: (path: string) => string;
     protocol?: any;
     local?: boolean;
-    tab?: any;
+    tab?: string;
   }
 
   interface ChromeTab {
@@ -19,11 +19,28 @@ declare module 'chrome-remote-interface' {
     devtoolsFrontendUrl?: string;
   }
 
+  interface CDPClient {
+    Console: {
+      enable(): Promise<void>;
+      messageAdded?: any;
+    };
+    Runtime: {
+      enable(): Promise<void>;
+      exceptionThrown?: any;
+    };
+    Network: {
+      enable(): Promise<void>;
+      requestWillBeSent?: any;
+      responseReceived?: any;
+    };
+    close(): Promise<void>;
+  }
+
   interface ChromeRemoteInterface {
+    (options?: ChromeRemoteInterfaceOptions): Promise<CDPClient>;
     List(options?: ChromeRemoteInterfaceOptions): Promise<ChromeTab[]>;
-    (options?: ChromeRemoteInterfaceOptions): Promise<any>;
   }
 
   const CDP: ChromeRemoteInterface;
-  export = CDP;
+  export default CDP;
 }
