@@ -3477,7 +3477,7 @@ export class ChromeDevToolsMCPServer {
    * Uses Chrome DevTools Protocol to modify JavaScript/TypeScript/CSS code
    */
   public async modifySourceCode(parameters: any): Promise<any> {
-    const { tabId, sourceId, newContent: _newContent, hotReload: _hotReload = true, validateSyntax: _validateSyntax = true } = parameters;
+    const { tabId, sourceId, newContent, hotReload = true, validateSyntax = true } = parameters;
     
     // Check if code modification is enabled
     const codeModificationEnabled = process.env.CODE_MODIFICATION_ENABLED !== 'false';
@@ -3497,21 +3497,281 @@ export class ChromeDevToolsMCPServer {
       };
     }
     
-    // For now, return a stub implementation
-    // This will be fully implemented in Task 16.3
-    return {
-      success: false,
-      message: 'modify_source_code is not yet implemented. This tool will be available in Task 16.3.',
-      sourceModification: {
-        tabId,
-        sourceId,
-        timestamp: new Date().toISOString(),
-        error: {
-          type: 'NotImplemented',
-          message: 'Tool implementation pending'
+    try {
+      // Get the Chrome client for this tab
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          message: `Tab ${tabId} is not connected. Use start_monitoring first.`,
+          error: 'Tab not connected',
+          sourceModification: {
+            tabId,
+            sourceId,
+            timestamp: new Date().toISOString(),
+            error: {
+              type: 'TabNotConnected',
+              message: 'Chrome tab is not connected'
+            }
+          }
+        };
+      }
+      
+      // Resolve the source target
+      const sourceTarget = await this.resolveSourceTarget(tabId, sourceId);
+      if (!sourceTarget) {
+        return {
+          success: false,
+          message: `Source file not found: ${sourceId}`,
+          error: 'Source file not found',
+          sourceModification: {
+            tabId,
+            sourceId,
+            timestamp: new Date().toISOString(),
+            error: {
+              type: 'SourceNotFound',
+              message: `Could not find source file matching: ${sourceId}`
+            }
+          }
+        };
+      }
+      
+      // Store original source for potential rollback
+      let originalSource: string | undefined;
+      try {
+        const originalResult = await client.send('Debugger.getScriptSource', {
+          scriptId: sourceTarget.scriptId
+        });
+        originalSource = originalResult.scriptSource;
+      } catch (error: any) {
+        if (LOG_LEVEL === 'debug') {
+          console.log('Could not retrieve original source:', error.message);
         }
       }
-    };
+      
+      // Validate syntax if requested (basic check for now)
+      if (validateSyntax) {
+        try {
+          // Basic syntax check using Function constructor
+          new Function(newContent);
+        } catch (syntaxError: any) {
+          return {
+            success: false,
+            message: `Syntax validation failed: ${syntaxError.message}`,
+            error: syntaxError.message,
+            sourceModification: {
+              tabId,
+              sourceId,
+              scriptId: sourceTarget.scriptId,
+              timestamp: new Date().toISOString(),
+              error: {
+                type: 'SyntaxError',
+                message: syntaxError.message
+              }
+            }
+          };
+        }
+      }
+      
+      // Modify the source code using CDP
+      const modifyResult = await client.Debugger.setScriptSource({
+        scriptId: sourceTarget.scriptId,
+        scriptSource: newContent
+      });
+      
+      if (modifyResult.status !== 'Ok') {
+        const errorMessage = modifyResult.exceptionDetails?.text || 'Code modification failed';
+        return {
+          success: false,
+          message: errorMessage,
+          error: errorMessage,
+          sourceModification: {
+            tabId,
+            sourceId,
+            scriptId: sourceTarget.scriptId,
+            timestamp: new Date().toISOString(),
+            error: {
+              type: 'ModificationError',
+              message: errorMessage,
+              details: modifyResult.exceptionDetails
+            }
+          }
+        };
+      }
+      
+      // Track affected modules
+      const affectedModules = [sourceTarget.url];
+      
+      // Handle hot reload if requested
+      let reloadRequired = false;
+      if (hotReload) {
+        try {
+          // Try hot reload based on module system
+          const reloadResult = await this.attemptHotReload(client, sourceTarget, affectedModules);
+          reloadRequired = !reloadResult.success;
+          
+          if (reloadResult.success) {
+            affectedModules.push(...(reloadResult.reloadedModules || []));
+          }
+        } catch (hotReloadError: any) {
+          // Hot reload failed, fall back to page reload
+          reloadRequired = true;
+          if (LOG_LEVEL === 'debug') {
+            console.log('Hot reload failed:', hotReloadError.message);
+          }
+        }
+        
+        // If hot reload failed, do a full page reload
+        if (reloadRequired) {
+          await client.Page.reload({ ignoreCache: true });
+        }
+      }
+      
+      // Update source registry with modification info
+      const registry = this.getSourceRegistry(tabId);
+      const sourceInfo = registry.get(sourceTarget.scriptId);
+      if (sourceInfo) {
+        sourceInfo.lastModified = new Date().toISOString();
+        sourceInfo.originalSource = originalSource;
+        sourceInfo.isModified = true;
+      }
+      
+      return {
+        success: true,
+        message: `Successfully modified source: ${sourceTarget.url}`,
+        reloadRequired,
+        affectedModules,
+        sourceModification: {
+          tabId,
+          sourceId,
+          scriptId: sourceTarget.scriptId,
+          url: sourceTarget.url,
+          timestamp: new Date().toISOString(),
+          originalStored: !!originalSource,
+          hotReloadAttempted: hotReload,
+          reloadRequired,
+          affectedModules
+        }
+      };
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to modify source code for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        message: `Failed to modify source code: ${error.message}`,
+        error: error.message,
+        sourceModification: {
+          tabId,
+          sourceId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'UnexpectedError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+  
+  /**
+   * Attempt hot reload for modified source
+   * Returns success status and list of reloaded modules
+   */
+  private async attemptHotReload(client: any, sourceTarget: any, affectedModules: string[]): Promise<any> {
+    try {
+      // Detect module system
+      const moduleDetection = await client.Runtime.evaluate({
+        expression: `
+          (function() {
+            if (typeof module !== 'undefined' && module.hot) return { type: 'webpack', hot: true };
+            if (typeof import.meta !== 'undefined' && import.meta.hot) return { type: 'vite', hot: true };
+            if (typeof System !== 'undefined') return { type: 'systemjs', hot: false };
+            if (typeof module !== 'undefined' && module.exports) return { type: 'commonjs', hot: false };
+            if (typeof importScripts === 'function') return { type: 'worker', hot: false };
+            return { type: 'unknown', hot: false };
+          })()
+        `,
+        returnByValue: true
+      });
+      
+      const moduleSystem = moduleDetection.result.value;
+      
+      if (moduleSystem.hot) {
+        // Try HMR (Hot Module Replacement)
+        const hmrResult = await client.Runtime.evaluate({
+          expression: `
+            (function() {
+              try {
+                // Webpack HMR
+                if (module.hot) {
+                  module.hot.accept();
+                  return { success: true, method: 'webpack' };
+                }
+                // Vite HMR
+                if (import.meta.hot) {
+                  import.meta.hot.accept();
+                  return { success: true, method: 'vite' };
+                }
+              } catch (e) {
+                return { success: false, error: e.message };
+              }
+            })()
+          `,
+          returnByValue: true
+        });
+        
+        if (hmrResult.result.value?.success) {
+          return {
+            success: true,
+            method: hmrResult.result.value.method,
+            reloadedModules: affectedModules
+          };
+        }
+      }
+      
+      // Try basic module reload for ES modules
+      if (sourceTarget.url.endsWith('.js') || sourceTarget.url.endsWith('.mjs')) {
+        const reloadResult = await client.Runtime.evaluate({
+          expression: `
+            (function() {
+              try {
+                // Force re-evaluation of the module
+                const url = new URL('${sourceTarget.url}', window.location.href);
+                url.searchParams.set('_t', Date.now());
+                return import(url.href).then(() => ({ success: true }));
+              } catch (e) {
+                return { success: false, error: e.message };
+              }
+            })()
+          `,
+          awaitPromise: true,
+          returnByValue: true
+        });
+        
+        if (reloadResult.result.value?.success) {
+          return {
+            success: true,
+            method: 'esm-reload',
+            reloadedModules: affectedModules
+          };
+        }
+      }
+      
+      // Hot reload not supported
+      return {
+        success: false,
+        reason: 'Hot reload not supported for this module type'
+      };
+      
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   }
 
   /**
