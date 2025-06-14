@@ -1611,13 +1611,56 @@ export class ChromeDevToolsMCPServer {
           }
           this.consoleMessages.get(tabId)!.push(consoleMessage);
           
+          // Also store error-level messages in the errors collection for analyzeErrors
+          if (consoleMessage.level === 'error') {
+            if (!this.errors.has(tabId)) {
+              this.errors.set(tabId, []);
+            }
+            this.errors.get(tabId)!.push({
+              type: 'runtime',
+              message: consoleMessage.text,
+              timestamp: new Date(consoleMessage.timestamp).toISOString(),
+              source: 'console',
+              url: consoleMessage.url || 'unknown',
+              lineNumber: consoleMessage.line,
+              columnNumber: consoleMessage.column,
+              stackTrace: consoleMessage.stackTrace,
+              executionContextId: consoleMessage.executionContextId
+            });
+          }
+          
           if (LOG_LEVEL === 'debug') {
             console.log(`Console message captured for tab ${tabId}:`, consoleMessage.level, consoleMessage.text);
           }
         });
         
+        // Also listen for runtime exceptions
+        client.Runtime.on('exceptionThrown', (event: any) => {
+          const exception = event.exceptionDetails;
+          if (!this.errors.has(tabId)) {
+            this.errors.set(tabId, []);
+          }
+          this.errors.get(tabId)!.push({
+            type: 'runtime',
+            message: exception.text || 'Unknown exception',
+            timestamp: new Date(event.timestamp || Date.now()).toISOString(),
+            source: 'exception',
+            url: exception.url || 'unknown',
+            lineNumber: exception.lineNumber,
+            columnNumber: exception.columnNumber,
+            stackTrace: exception.stackTrace,
+            scriptId: exception.scriptId,
+            executionContextId: exception.executionContextId,
+            exception: exception.exception
+          });
+          
+          if (LOG_LEVEL === 'debug') {
+            console.log(`Runtime exception captured for tab ${tabId}:`, exception.text);
+          }
+        });
+        
         if (LOG_LEVEL === 'debug') {
-          console.log('Runtime domain enabled with console message listener');
+          console.log('Runtime domain enabled with console message and exception listeners');
         }
       } catch (error: any) {
         if (LOG_LEVEL === 'debug') {
@@ -4100,26 +4143,60 @@ export class ChromeDevToolsMCPServer {
       const pageData = scriptsResponse.result.value;
       const sourceFiles: any[] = [];
 
+      // Get source registry to match scriptIds
+      const sourceRegistry = this.getSourceRegistry(tabId);
+      
       // Process JavaScript files
       if (fileTypes.includes('js') || fileTypes.includes('ts')) {
-        for (const script of pageData.scripts) {
-          const fileExtension = script.src ? 
-            (script.src.includes('.ts') ? 'ts' : 'js') : 
-            'js';
-          
-          if (fileTypes.includes(fileExtension)) {
-            const sourceFile: any = {
-              type: fileExtension,
-              url: script.src || 'inline',
-              inline: script.inline,
-              size: script.content ? script.content.length : null
-            };
-
-            if (includeContent && script.content) {
-              sourceFile.content = script.content;
+        // First, add all scripts from the source registry (has scriptIds)
+        for (const [scriptId, registrySource] of sourceRegistry.entries()) {
+          if (registrySource.url) {
+            const fileExtension = registrySource.url.includes('.ts') ? 'ts' : 'js';
+            if (fileTypes.includes(fileExtension)) {
+              const sourceFile: any = {
+                scriptId: scriptId,  // Include scriptId for modify_source_code
+                type: fileExtension,
+                url: registrySource.url,
+                inline: false,
+                hasSourceMap: registrySource.hasSourceMap,
+                sourceMapURL: registrySource.sourceMapURL,
+                length: registrySource.length
+              };
+              
+              // Get content if requested
+              if (includeContent) {
+                try {
+                  const sourceContent = await client.Debugger.getScriptSource({ scriptId });
+                  sourceFile.content = sourceContent.scriptSource;
+                  sourceFile.size = sourceContent.scriptSource.length;
+                } catch (error) {
+                  sourceFile.contentError = 'Unable to retrieve source content';
+                }
+              }
+              
+              sourceFiles.push(sourceFile);
             }
-
-            sourceFiles.push(sourceFile);
+          }
+        }
+        
+        // Then add inline scripts from DOM (these don't have scriptIds)
+        for (const script of pageData.scripts) {
+          if (script.inline && script.content) {
+            const fileExtension = 'js';
+            if (fileTypes.includes(fileExtension)) {
+              const sourceFile: any = {
+                type: fileExtension,
+                url: 'inline',
+                inline: true,
+                size: script.content.length
+              };
+              
+              if (includeContent) {
+                sourceFile.content = script.content;
+              }
+              
+              sourceFiles.push(sourceFile);
+            }
           }
         }
       }
@@ -4205,7 +4282,9 @@ export class ChromeDevToolsMCPServer {
               css: sourceFiles.filter(f => f.type === 'css').length,
               html: sourceFiles.filter(f => f.type === 'html').length,
               inline: sourceFiles.filter(f => f.inline).length,
-              external: sourceFiles.filter(f => !f.inline).length
+              external: sourceFiles.filter(f => !f.inline).length,
+              withScriptId: sourceFiles.filter(f => f.scriptId).length,
+              modifiable: sourceFiles.filter(f => f.scriptId && !f.inline).length
             }
           }
         }
@@ -4289,7 +4368,8 @@ export class ChromeDevToolsMCPServer {
             timestamp: new Date().toISOString(),
             error: {
               type: 'SourceNotFound',
-              message: `Could not find source file matching: ${sourceId}`
+              message: `Could not find source file matching: ${sourceId}. Use list_source_files first to get valid scriptIds.`,
+              suggestion: 'Source files must have a scriptId to be modifiable. Use list_source_files with the same tabId to see available sources.'
             }
           }
         };
@@ -5906,7 +5986,6 @@ export class ChromeDevToolsMCPServer {
     const { 
       tabId, 
       errorType = 'all', 
-      _includeStackTrace = true, 
       includeSourceContext = true, 
       timeRange = 300 
     } = parameters;
