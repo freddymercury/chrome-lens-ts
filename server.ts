@@ -476,7 +476,12 @@ export class ChromeDevToolsMCPServer {
   private stateWatchers: Map<string, StateWatcher> = new Map();
   
   // DOM agent state tracking for v1.1.1 bug fix
-  private domStates: Map<string, { enabled: boolean; enabledAt: number }> = new Map();
+  private domStates: Map<string, { 
+    enabled: boolean; 
+    enabling: boolean; 
+    enabledAt: number | null;
+    enablePromise?: Promise<void>;
+  }> = new Map();
 
   constructor() {
     // For now, we'll initialize this as a placeholder
@@ -1362,7 +1367,8 @@ export class ChromeDevToolsMCPServer {
     const domState = this.domStates.get(tabId);
     return {
       isDOMEnabled: domState?.enabled || false,
-      domEnabledAt: domState?.enabledAt || null
+      domEnabledAt: domState?.enabledAt || null,
+      isDOMEnabling: domState?.enabling || false
     };
   }
 
@@ -4119,15 +4125,44 @@ export class ChromeDevToolsMCPServer {
       // Enable debugger domain to access scripts and source files
       await client.Debugger.enable();
       
-      // Enable DOM agent if needed (v1.1.1-BF1.1)
-      const domState = this.domStates.get(tabId);
-      if (!domState?.enabled) {
-        try {
-          await client.DOM.enable();
-          this.domStates.set(tabId, { enabled: true, enabledAt: Date.now() });
-          if (LOG_LEVEL === 'debug') {
-            console.log(`DOM agent enabled for tab ${tabId}`);
+      // Enable DOM agent if needed (v1.1.1-BF1.1 & BF1.2)
+      let domState = this.domStates.get(tabId);
+      
+      // Initialize DOM state if not exists
+      if (!domState) {
+        domState = { enabled: false, enabling: false, enabledAt: null };
+        this.domStates.set(tabId, domState);
+      }
+      
+      // Handle concurrent calls - wait if already enabling
+      if (domState.enabling && domState.enablePromise) {
+        await domState.enablePromise;
+      } else if (!domState.enabled && !domState.enabling) {
+        // Mark as enabling to prevent concurrent enables
+        domState.enabling = true;
+        
+        // Create enable promise for concurrent callers to wait on
+        const enablePromise = (async () => {
+          try {
+            await client.DOM.enable();
+            const state = this.domStates.get(tabId)!;
+            state.enabled = true;
+            state.enabling = false;
+            state.enabledAt = Date.now();
+            if (LOG_LEVEL === 'debug') {
+              console.log(`DOM agent enabled for tab ${tabId}`);
+            }
+          } catch (error) {
+            const state = this.domStates.get(tabId)!;
+            state.enabling = false;
+            throw error;
           }
+        })();
+        
+        domState.enablePromise = enablePromise;
+        
+        try {
+          await domState.enablePromise;
         } catch (error) {
           // DOM enable failed - return graceful error
           return {
