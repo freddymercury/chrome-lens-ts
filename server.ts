@@ -5688,6 +5688,234 @@ export class ChromeDevToolsMCPServer {
     
     return recommendations;
   }
+
+  /**
+   * Enhance error context during collection
+   * Called when errors are detected through various CDP events
+   */
+  public enhanceErrorContext(tabId: string, errorType: string, event: any): void {
+    const enhancedError: any = {
+      timestamp: new Date().toISOString(),
+      type: errorType,
+      errorId: `${errorType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    };
+    
+    switch (errorType) {
+      case 'runtime':
+        if (event.exceptionDetails) {
+          enhancedError.message = event.exceptionDetails.text;
+          enhancedError.lineNumber = event.exceptionDetails.lineNumber;
+          enhancedError.columnNumber = event.exceptionDetails.columnNumber;
+          enhancedError.scriptId = event.exceptionDetails.scriptId;
+          enhancedError.url = event.exceptionDetails.url;
+          enhancedError.stackTrace = event.exceptionDetails.stackTrace;
+          enhancedError.exception = event.exceptionDetails.exception;
+          enhancedError.callFrames = event.exceptionDetails.stackTrace?.callFrames;
+        }
+        break;
+        
+      case 'console':
+        if (event.message) {
+          enhancedError.source = 'console';
+          enhancedError.level = event.message.level;
+          enhancedError.message = event.message.text;
+          enhancedError.url = event.message.url;
+          enhancedError.lineNumber = event.message.line;
+          enhancedError.columnNumber = event.message.column;
+          enhancedError.stackTrace = event.message.stackTrace;
+        }
+        break;
+        
+      case 'network':
+        if (event.response) {
+          const networkLog: any = {
+            timestamp: new Date().toISOString(),
+            type: 'network',
+            requestId: event.requestId,
+            url: event.response.url,
+            status: event.response.status,
+            statusText: event.response.statusText,
+            errorText: event.errorText,
+            errorContext: {
+              headers: event.response.headers,
+              mimeType: event.response.mimeType,
+              timing: event.response.timing
+            }
+          };
+          this.addStorageEntry('networkLogs', tabId, networkLog);
+          return; // Network errors are stored in networkLogs
+        }
+        break;
+        
+      case 'security':
+        enhancedError.violationType = event.violationType;
+        enhancedError.blockedURI = event.blockedURI;
+        enhancedError.documentURI = event.documentURI;
+        enhancedError.violatedDirective = event.violatedDirective;
+        enhancedError.effectiveDirective = event.effectiveDirective;
+        enhancedError.originalPolicy = event.originalPolicy;
+        enhancedError.disposition = event.disposition;
+        enhancedError.sourceLocation = {
+          url: event.sourceFile,
+          line: event.lineNumber,
+          column: event.columnNumber
+        };
+        enhancedError.message = `${event.violationType} violation: ${event.violatedDirective}`;
+        break;
+    }
+    
+    // Store enhanced error
+    if (errorType !== 'network') {
+      this.addStorageEntry('errors', tabId, enhancedError);
+    }
+  }
+
+  /**
+   * Collect browser context for error
+   */
+  public async collectBrowserContext(tabId: string, error: any): Promise<any> {
+    try {
+      const client = this.clients.get(tabId);
+      if (!client) return error;
+      
+      const browserResult = await client.Runtime.evaluate({
+        expression: `({
+          userAgent: navigator.userAgent,
+          platform: navigator.platform,
+          language: navigator.language,
+          cookieEnabled: navigator.cookieEnabled,
+          onLine: navigator.onLine,
+          screen: {
+            width: screen.width,
+            height: screen.height,
+            pixelRatio: window.devicePixelRatio
+          },
+          viewport: {
+            width: window.innerWidth,
+            height: window.innerHeight
+          },
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        })`,
+        returnByValue: true
+      });
+      
+      if (browserResult.result?.value) {
+        error.browserContext = browserResult.result.value;
+      }
+    } catch (e) {
+      // Silently fail context collection
+    }
+    
+    return error;
+  }
+
+  /**
+   * Collect DOM context for error
+   */
+  public async collectDOMContext(tabId: string, error: any): Promise<any> {
+    try {
+      const client = this.clients.get(tabId);
+      if (!client) return error;
+      
+      const domResult = await client.Runtime.evaluate({
+        expression: `({
+          readyState: document.readyState,
+          url: document.location.href,
+          title: document.title,
+          referrer: document.referrer,
+          documentMode: document.documentMode,
+          compatMode: document.compatMode
+        })`,
+        returnByValue: true
+      });
+      
+      const interactionResult = await client.Runtime.evaluate({
+        expression: `({
+          activeElement: document.activeElement ? document.activeElement.tagName + (document.activeElement.id ? '#' + document.activeElement.id : '') : null,
+          focusedElement: document.hasFocus() ? (document.activeElement ? document.activeElement.tagName : 'body') : null,
+          documentScrollTop: document.documentElement.scrollTop,
+          documentScrollLeft: document.documentElement.scrollLeft
+        })`,
+        returnByValue: true
+      });
+      
+      if (domResult.result?.value) {
+        error.domContext = {
+          ...domResult.result.value,
+          ...interactionResult.result?.value,
+          scrollPosition: {
+            top: interactionResult.result?.value?.documentScrollTop || 0,
+            left: interactionResult.result?.value?.documentScrollLeft || 0
+          }
+        };
+      }
+    } catch (e) {
+      // Silently fail context collection
+    }
+    
+    return error;
+  }
+
+  /**
+   * Collect performance context for error
+   */
+  public async collectPerformanceContext(tabId: string, error: any): Promise<any> {
+    try {
+      const client = this.clients.get(tabId);
+      if (!client) return error;
+      
+      const perfResult = await client.Runtime.evaluate({
+        expression: `({
+          memory: performance.memory ? {
+            usedJSHeapSize: performance.memory.usedJSHeapSize,
+            totalJSHeapSize: performance.memory.totalJSHeapSize,
+            jsHeapSizeLimit: performance.memory.jsHeapSizeLimit
+          } : null,
+          timing: performance.timing ? {
+            navigationStart: performance.timing.navigationStart,
+            domContentLoadedEventEnd: performance.timing.domContentLoadedEventEnd,
+            loadEventEnd: performance.timing.loadEventEnd,
+            timeOrigin: performance.timeOrigin
+          } : null,
+          now: performance.now()
+        })`,
+        returnByValue: true
+      });
+      
+      if (perfResult.result?.value) {
+        error.performanceContext = perfResult.result.value;
+      }
+    } catch (e) {
+      // Silently fail context collection
+    }
+    
+    return error;
+  }
+
+  /**
+   * Enhance error with full context
+   */
+  public async enhanceErrorWithFullContext(tabId: string, error: any): Promise<any> {
+    const startTime = Date.now();
+    
+    // Collect all contexts in parallel
+    const [browserEnhanced, domEnhanced, perfEnhanced] = await Promise.all([
+      this.collectBrowserContext(tabId, { ...error }),
+      this.collectDOMContext(tabId, { ...error }),
+      this.collectPerformanceContext(tabId, { ...error })
+    ]);
+    
+    // Merge all contexts
+    const enhancedError = {
+      ...error,
+      browserContext: browserEnhanced.browserContext,
+      domContext: domEnhanced.domContext,
+      performanceContext: perfEnhanced.performanceContext,
+      contextCollectionTime: Date.now() - startTime
+    };
+    
+    return enhancedError;
+  }
 }
 
 // Export for testing and external use
