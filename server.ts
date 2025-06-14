@@ -4924,11 +4924,20 @@ export class ChromeDevToolsMCPServer {
    * Get file type from URL
    */
   private getFileType(url: string): string {
-    if (url.endsWith('.js') || url.endsWith('.mjs')) return 'javascript';
-    if (url.endsWith('.ts') || url.endsWith('.tsx')) return 'typescript';
-    if (url.endsWith('.css')) return 'css';
-    if (url.endsWith('.html') || url.endsWith('.htm')) return 'html';
-    if (url.endsWith('.json')) return 'json';
+    // Remove query parameters and hash from URL
+    const cleanUrl = url.split('?')[0].split('#')[0];
+    
+    // Check file extensions
+    if (cleanUrl.endsWith('.js') || cleanUrl.endsWith('.mjs') || cleanUrl.endsWith('.jsx')) {
+      return 'javascript';
+    }
+    if (cleanUrl.endsWith('.ts') || cleanUrl.endsWith('.tsx')) {
+      return 'typescript';
+    }
+    if (cleanUrl.endsWith('.css')) return 'css';
+    if (cleanUrl.endsWith('.html') || cleanUrl.endsWith('.htm')) return 'html';
+    if (cleanUrl.endsWith('.json')) return 'json';
+    
     return 'unknown';
   }
 
@@ -5061,21 +5070,24 @@ export class ChromeDevToolsMCPServer {
         }
       }
       
+      // Clean filename for TypeScript (remove query params)
+      const cleanFileName = fileName.split('?')[0].split('#')[0];
+      
       // Create a source file
       const sourceFile = ts.createSourceFile(
-        fileName,
+        cleanFileName,
         content,
         compilerOptions.target,
         true,
-        fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+        cleanFileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
       );
       
       // Simple syntax validation using the language service
       const languageService = ts.createLanguageService({
-        getScriptFileNames: () => [fileName],
+        getScriptFileNames: () => [cleanFileName],
         getScriptVersion: () => '1',
         getScriptSnapshot: (name: string) => {
-          if (name === fileName) {
+          if (name === cleanFileName) {
             return ts.ScriptSnapshot.fromString(content);
           }
           return undefined;
@@ -5089,7 +5101,7 @@ export class ChromeDevToolsMCPServer {
         getDirectories: () => []
       });
       
-      const syntaxDiagnostics = languageService.getSyntacticDiagnostics(fileName);
+      const syntaxDiagnostics = languageService.getSyntacticDiagnostics(cleanFileName);
       
       if (syntaxDiagnostics.length > 0) {
         const firstError = syntaxDiagnostics[0];
