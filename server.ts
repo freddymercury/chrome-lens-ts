@@ -34,6 +34,9 @@ export class ChromeDevToolsMCPServer {
   
   // Breakpoint registry for v1.1 debugging features
   private breakpoints: Map<string, Map<string, any>> = new Map();
+  
+  // Debugger state tracking for v1.1 debugging features
+  private debuggerStates: Map<string, any> = new Map();
 
   constructor() {
     // For now, we'll initialize this as a placeholder
@@ -3983,6 +3986,34 @@ export class ChromeDevToolsMCPServer {
   }
 
   /**
+   * Get or create debugger state for a tab
+   */
+  public getDebuggerState(tabId: string): any {
+    if (!this.debuggerStates.has(tabId)) {
+      this.debuggerStates.set(tabId, {
+        isPaused: false,
+        pausedReason: null,
+        callFrames: [],
+        breakpointsPaused: [],
+        activeOperation: null
+      });
+    }
+    return this.debuggerStates.get(tabId)!;
+  }
+
+  /**
+   * Update debugger state with paused event data
+   */
+  public updateDebuggerState(tabId: string, pausedData: any): void {
+    const state = this.getDebuggerState(tabId);
+    state.isPaused = true;
+    state.pausedReason = pausedData.reason;
+    state.callFrames = pausedData.callFrames || [];
+    state.breakpointsPaused = pausedData.hitBreakpoints || [];
+    state.lastUpdate = new Date().toISOString();
+  }
+
+  /**
    * Resolve source target by URL pattern or script ID
    */
   public async resolveSourceTarget(tabId: string, sourceId: string): Promise<any> {
@@ -4392,7 +4423,7 @@ export class ChromeDevToolsMCPServer {
    * Uses Chrome DevTools Protocol to pause, resume, and step through code
    */
   public async debugStepControl(parameters: any): Promise<any> {
-    const { tabId, action, callFrameId: _callFrameId } = parameters;
+    const { tabId, action, callFrameId, pauseOnExceptions } = parameters;
     
     // Check if debugger is enabled
     const debuggerEnabled = process.env.DEBUGGER_ENABLED !== 'false';
@@ -4412,21 +4443,220 @@ export class ChromeDevToolsMCPServer {
       };
     }
     
-    // For now, return a stub implementation
-    // This will be fully implemented in Task 17.4
-    return {
-      success: false,
-      message: 'debug_step_control is not yet implemented. This tool will be available in Task 17.4.',
-      stepControl: {
-        tabId,
-        action,
-        timestamp: new Date().toISOString(),
-        error: {
-          type: 'NotImplemented',
-          message: 'Tool implementation pending'
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    // Validate action parameter
+    const validActions = ['pause', 'resume', 'stepOver', 'stepInto', 'stepOut'];
+    if (!validActions.includes(action)) {
+      return {
+        success: false,
+        error: `Invalid action: ${action}. Valid actions: ${validActions.join(', ')}`,
+        stepControl: {
+          tabId,
+          action,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'ValidationError',
+            message: `Action '${action}' is not supported`
+          }
         }
+      };
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          stepControl: {
+            tabId,
+            action,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
       }
-    };
+      
+      // Get debugger state
+      const state = this.getDebuggerState(tabId);
+      
+      // Check for concurrent operations
+      if (state.activeOperation) {
+        return {
+          success: false,
+          error: 'Another debugging operation is in progress',
+          stepControl: {
+            tabId,
+            action,
+            timestamp,
+            error: {
+              type: 'OperationInProgress',
+              message: `Operation '${state.activeOperation}' is already in progress`
+            }
+          }
+        };
+      }
+      
+      // Validate callFrameId for step operations
+      if (['stepOver', 'stepInto', 'stepOut'].includes(action) && !callFrameId) {
+        return {
+          success: false,
+          error: 'callFrameId required for step operations',
+          stepControl: {
+            tabId,
+            action,
+            timestamp,
+            error: {
+              type: 'ValidationError',
+              message: `callFrameId is required for ${action} operation`
+            }
+          }
+        };
+      }
+      
+      // Set active operation
+      state.activeOperation = action;
+      
+      let result: any;
+      
+      try {
+        switch (action) {
+          case 'pause':
+            // Set pause on exceptions if specified
+            if (pauseOnExceptions) {
+              await client.Debugger.setPauseOnExceptions({
+                state: pauseOnExceptions
+              });
+            }
+            
+            await client.Debugger.pause();
+            state.isPaused = true;
+            state.pausedReason = 'user';
+            
+            result = {
+              success: true,
+              message: 'Execution paused',
+              stepControl: {
+                tabId,
+                action,
+                timestamp,
+                isPaused: true
+              }
+            };
+            break;
+            
+          case 'resume':
+            await client.Debugger.resume();
+            state.isPaused = false;
+            state.pausedReason = null;
+            state.callFrames = [];
+            
+            result = {
+              success: true,
+              message: 'Execution resumed',
+              stepControl: {
+                tabId,
+                action,
+                timestamp,
+                isPaused: false
+              }
+            };
+            break;
+            
+          case 'stepOver':
+            await client.Debugger.stepOver();
+            
+            result = {
+              success: true,
+              message: 'Stepped over',
+              stepControl: {
+                tabId,
+                action,
+                timestamp,
+                callFrameId,
+                callStackDepth: state.callFrames.length
+              }
+            };
+            break;
+            
+          case 'stepInto':
+            await client.Debugger.stepInto();
+            
+            result = {
+              success: true,
+              message: 'Stepped into',
+              stepControl: {
+                tabId,
+                action,
+                timestamp,
+                callFrameId,
+                callStackDepth: state.callFrames.length
+              }
+            };
+            break;
+            
+          case 'stepOut':
+            await client.Debugger.stepOut();
+            
+            result = {
+              success: true,
+              message: 'Stepped out',
+              stepControl: {
+                tabId,
+                action,
+                timestamp,
+                callFrameId,
+                callStackDepth: state.callFrames.length
+              }
+            };
+            break;
+        }
+        
+        return result;
+        
+      } finally {
+        // Clear active operation
+        state.activeOperation = null;
+      }
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to perform ${action} for tab ${tabId}:`, error.message);
+      }
+      
+      // Clear active operation on error
+      const state = this.getDebuggerState(tabId);
+      state.activeOperation = null;
+      
+      return {
+        success: false,
+        error: error.message,
+        stepControl: {
+          tabId,
+          action,
+          timestamp,
+          error: {
+            type: 'DebugError',
+            message: error.message
+          }
+        }
+      };
+    }
   }
 }
 
