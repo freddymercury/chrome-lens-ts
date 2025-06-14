@@ -1,4 +1,5 @@
 import * as dotenv from 'dotenv';
+import * as CDP from 'chrome-remote-interface';
 
 // Load environment variables
 dotenv.config();
@@ -11,6 +12,8 @@ const MCP_TRANSPORT = process.env.MCP_TRANSPORT || 'stdio';
 const MAX_TOOLS = parseInt(process.env.MAX_TOOLS || '20', 10);
 const TOOL_TIMEOUT_MS = parseInt(process.env.TOOL_TIMEOUT_MS || '30000', 10);
 const MAX_STORAGE_SIZE = parseInt(process.env.MAX_STORAGE_SIZE || '10485760', 10); // 10MB default
+const CHROME_DEBUG_PORT = parseInt(process.env.CHROME_DEBUG_PORT || '9222', 10);
+const CHROME_DEBUG_HOST = process.env.CHROME_DEBUG_HOST || 'localhost';
 
 /**
  * Chrome DevTools MCP Server
@@ -140,24 +143,48 @@ export class ChromeDevToolsMCPServer {
 
   /**
    * Setup tool handlers for MCP requests
-   * Initializes empty tool list that can be populated later
+   * Initializes tool list with connect_to_chrome tool
    */
   public setupToolHandlers(): void {
     if (LOG_LEVEL === 'debug') {
       console.log(`Setting up tool handlers (max tools: ${MAX_TOOLS})...`);
     }
     
-    // Initialize empty tools array
-    this.tools = [];
+    // Initialize tools array with connect_to_chrome tool
+    this.tools = [
+      {
+        name: 'connect_to_chrome',
+        description: 'Connect to Chrome DevTools instance for debugging and monitoring. Establishes a connection to Chrome\'s remote debugging protocol.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            port: {
+              type: 'integer',
+              description: 'Port number for Chrome DevTools Protocol',
+              default: CHROME_DEBUG_PORT,
+              minimum: 1024,
+              maximum: 65535
+            },
+            host: {
+              type: 'string',
+              description: 'Host address for Chrome DevTools Protocol',
+              default: CHROME_DEBUG_HOST,
+              pattern: '^[a-zA-Z0-9.-]+$'
+            }
+          },
+          required: []
+        }
+      }
+    ];
     
     if (LOG_LEVEL === 'debug') {
-      console.log('Tool handlers setup complete');
+      console.log(`Tool handlers setup complete with ${this.tools.length} tools`);
     }
   }
 
   /**
    * List all available tools
-   * Returns empty array initially as no tools are registered yet
+   * Returns array of available tools including connect_to_chrome
    */
   public async listTools(): Promise<any[]> {
     if (LOG_LEVEL === 'debug') {
@@ -186,8 +213,11 @@ export class ChromeDevToolsMCPServer {
       throw new Error('Tool parameters cannot be null or undefined');
     }
     
-    // Switch statement for tool handling (currently empty)
+    // Switch statement for tool handling
     switch (name) {
+      case 'connect_to_chrome':
+        return await this.connectToChrome(parameters);
+      
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
     }
@@ -264,6 +294,82 @@ export class ChromeDevToolsMCPServer {
     
     if (LOG_LEVEL === 'debug') {
       console.log('All storage maps cleared');
+    }
+  }
+
+  /**
+   * Connect to Chrome DevTools instance
+   * Performs basic CDP.List() call to test Chrome connection
+   */
+  public async connectToChrome(parameters: any): Promise<any> {
+    if (LOG_LEVEL === 'debug') {
+      console.log('Connecting to Chrome DevTools:', parameters);
+    }
+
+    // Extract and validate parameters before applying defaults
+    const rawHost = parameters.host;
+    const rawPort = parameters.port;
+
+    // Validate host parameter if provided
+    if (rawHost !== undefined) {
+      if (typeof rawHost !== 'string' || rawHost.trim() === '') {
+        throw new Error('Invalid host: Host must be a non-empty string.');
+      }
+      if (!/^[a-zA-Z0-9.-]+$/.test(rawHost)) {
+        throw new Error(`Invalid host format: ${rawHost}. Host must contain only alphanumeric characters, dots, and hyphens.`);
+      }
+    }
+
+    // Apply defaults after validation
+    const port = rawPort || CHROME_DEBUG_PORT;
+    const host = rawHost || CHROME_DEBUG_HOST;
+
+    // Validate port
+    if (port < 1024 || port > 65535) {
+      throw new Error(`Invalid port: ${port}. Port must be between 1024 and 65535.`);
+    }
+
+    try {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Attempting to connect to Chrome at ${host}:${port}`);
+      }
+
+      // Try to list Chrome tabs to test connection
+      const tabs = await CDP.List({ host, port });
+
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Successfully connected to Chrome. Found ${tabs.length} tabs.`);
+      }
+
+      return {
+        success: true,
+        message: `Successfully connected to Chrome DevTools at ${host}:${port}`,
+        connection: {
+          host,
+          port,
+          tabCount: tabs.length,
+          tabs: tabs.map(tab => ({
+            id: tab.id,
+            title: tab.title,
+            url: tab.url,
+            type: tab.type
+          }))
+        }
+      };
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log('Failed to connect to Chrome:', error.message);
+      }
+
+      return {
+        success: false,
+        message: `Failed to connect to Chrome DevTools at ${host}:${port}: ${error.message}`,
+        connection: {
+          host,
+          port,
+          error: error.message
+        }
+      };
     }
   }
 }

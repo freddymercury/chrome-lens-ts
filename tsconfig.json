@@ -22,12 +22,14 @@
     "noImplicitThis": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "exactOptionalPropertyTypes": true
+    "exactOptionalPropertyTypes": true,
+    "typeRoots": ["./types", "./node_modules/@types"]
   },
   "include": [
     "*.ts",
     "src/**/*.ts",
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
