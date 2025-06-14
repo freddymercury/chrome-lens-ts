@@ -4511,6 +4511,24 @@ export class ChromeDevToolsMCPServer {
       if (validateSyntax) {
         const validationResult = await this.validateSourceCode(client, newContent, fileType, sourceTarget);
         if (!validationResult.valid) {
+          // Check if rollback is enabled
+          const rollbackEnabled = process.env.ENABLE_CODE_ROLLBACK !== 'false';
+          let rollbackError: string | undefined;
+          let rollbackFailed = false;
+          
+          // Attempt rollback if enabled and we have original source
+          if (rollbackEnabled && originalSource) {
+            try {
+              await client.Debugger.setScriptSource({
+                scriptId: sourceTarget.scriptId,
+                scriptSource: originalSource
+              });
+            } catch (error) {
+              rollbackFailed = true;
+              rollbackError = error instanceof Error ? error.message : 'Unknown rollback error';
+            }
+          }
+          
           return {
             success: false,
             message: `Validation failed: ${validationResult.error}`,
@@ -4525,7 +4543,9 @@ export class ChromeDevToolsMCPServer {
                 type: validationResult.errorType || 'ValidationError',
                 message: validationResult.error,
                 lineNumber: validationResult.lineNumber,
-                columnNumber: validationResult.columnNumber
+                columnNumber: validationResult.columnNumber,
+                rollbackFailed,
+                rollbackError
               }
             }
           };
@@ -4602,11 +4622,32 @@ export class ChromeDevToolsMCPServer {
         sourceInfo.lastModified = new Date().toISOString();
         sourceInfo.originalSource = originalSource;
         sourceInfo.isModified = true;
+        
+        // Track rollback history
+        const maxRollbackHistory = parseInt(process.env.MAX_ROLLBACK_HISTORY || '10', 10);
+        if (!sourceInfo.rollbackHistory) {
+          sourceInfo.rollbackHistory = [];
+        }
+        
+        if (originalSource) {
+          sourceInfo.rollbackHistory.push({
+            version: sourceInfo.rollbackHistory.length + 1,
+            source: originalSource,
+            timestamp: new Date().toISOString()
+          });
+          
+          // Limit rollback history
+          if (sourceInfo.rollbackHistory.length > maxRollbackHistory) {
+            sourceInfo.rollbackHistory = sourceInfo.rollbackHistory.slice(-maxRollbackHistory);
+          }
+        }
       }
       
       // Check for runtime errors after modification
       let warnings: any[] = [];
-      if (process.env.CODE_VALIDATION_STRICT === 'true') {
+      const rollbackEnabled = process.env.ENABLE_CODE_ROLLBACK !== 'false';
+      
+      if (process.env.CODE_VALIDATION_STRICT === 'true' || rollbackEnabled) {
         try {
           const runtimeCheck = await client.Runtime.evaluate({
             expression: `(function() { try { return { success: true }; } catch(e) { return { success: false, error: e.toString() }; } })()`,
@@ -4615,10 +4656,24 @@ export class ChromeDevToolsMCPServer {
           
           if (runtimeCheck.exceptionDetails) {
             warnings.push({
-              type: 'RuntimeWarning',
-              message: 'Potential runtime error detected after modification',
+              type: 'RuntimeError',
+              message: 'Runtime error detected after modification',
               details: runtimeCheck.exceptionDetails
             });
+            
+            // Attempt rollback if enabled
+            if (rollbackEnabled && originalSource) {
+              try {
+                await client.Debugger.setScriptSource({
+                  scriptId: sourceTarget.scriptId,
+                  scriptSource: originalSource
+                });
+                warnings[0].rollbackPerformed = true;
+              } catch (rollbackError) {
+                warnings[0].rollbackFailed = true;
+                warnings[0].rollbackError = rollbackError instanceof Error ? rollbackError.message : 'Unknown error';
+              }
+            }
           }
         } catch (error: any) {
           // Runtime check failed, but modification succeeded
@@ -4645,7 +4700,9 @@ export class ChromeDevToolsMCPServer {
           hotReloadAttempted: hotReload,
           reloadRequired,
           affectedModules,
-          warnings: warnings.length > 0 ? warnings : undefined
+          warnings: warnings.length > 0 ? warnings : undefined,
+          canRollback: !!originalSource,
+          rollbackId: originalSource ? `${tabId}-${sourceTarget.scriptId}-${Date.now()}` : undefined
         }
       };
       
