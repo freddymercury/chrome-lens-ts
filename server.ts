@@ -4579,18 +4579,67 @@ export class ChromeDevToolsMCPServer {
       }
       
       // Track affected modules
-      const affectedModules = [sourceTarget.url];
+      let affectedModules = [sourceTarget.url];
       
       // Handle hot reload if requested
       let reloadRequired = false;
-      if (hotReload) {
+      let hotReloadSystem: string | undefined;
+      let hmrBoundaries: string[] | undefined;
+      let hmrDisabledReason: string | undefined;
+      let actualHotReload = hotReload;
+      
+      // Check if HMR is disabled via environment
+      if (process.env.DISABLE_HMR === 'true') {
+        hmrDisabledReason = 'Environment variable DISABLE_HMR is set';
+        actualHotReload = false;
+      }
+      
+      if (actualHotReload) {
         try {
           // Try hot reload based on module system
           const reloadResult = await this.attemptHotReload(client, sourceTarget, affectedModules);
           reloadRequired = !reloadResult.success;
           
           if (reloadResult.success) {
-            affectedModules.push(...(reloadResult.reloadedModules || []));
+            hotReloadSystem = reloadResult.method;
+            
+            // Helper to normalize module paths for deduplication
+            const normalizeModule = (mod: string) => {
+              try {
+                // If it's a full URL, extract the pathname
+                const url = new URL(mod);
+                return url.pathname;
+              } catch {
+                // If it's already a path, return as-is
+                return mod;
+              }
+            };
+            
+            // Track normalized paths to avoid duplicates
+            const normalizedPaths = new Set(affectedModules.map(normalizeModule));
+            
+            if (reloadResult.reloadedModules) {
+              // Only add reloaded modules that aren't already tracked
+              for (const mod of reloadResult.reloadedModules) {
+                const normalized = normalizeModule(mod);
+                if (!normalizedPaths.has(normalized)) {
+                  affectedModules.push(mod);
+                  normalizedPaths.add(normalized);
+                }
+              }
+            }
+            
+            if (reloadResult.boundaries) {
+              hmrBoundaries = reloadResult.boundaries;
+              // Add boundaries to affected modules
+              for (const boundary of reloadResult.boundaries) {
+                const normalized = normalizeModule(boundary);
+                if (!normalizedPaths.has(normalized)) {
+                  affectedModules.push(boundary);
+                  normalizedPaths.add(normalized);
+                }
+              }
+            }
           }
         } catch (hotReloadError: any) {
           // Hot reload failed, fall back to page reload
@@ -4697,12 +4746,15 @@ export class ChromeDevToolsMCPServer {
           contentSize,
           timestamp: new Date().toISOString(),
           originalStored: !!originalSource,
-          hotReloadAttempted: hotReload,
+          hotReloadAttempted: actualHotReload,
           reloadRequired,
           affectedModules,
           warnings: warnings.length > 0 ? warnings : undefined,
           canRollback: !!originalSource,
-          rollbackId: originalSource ? `${tabId}-${sourceTarget.scriptId}-${Date.now()}` : undefined
+          rollbackId: originalSource ? `${tabId}-${sourceTarget.scriptId}-${Date.now()}` : undefined,
+          hotReloadSystem,
+          hmrBoundaries,
+          hmrDisabledReason
         }
       };
       
@@ -4734,52 +4786,98 @@ export class ChromeDevToolsMCPServer {
    */
   private async attemptHotReload(client: any, sourceTarget: any, affectedModules: string[]): Promise<any> {
     try {
-      // Detect module system
-      const moduleDetection = await client.Runtime.evaluate({
-        expression: `
-          (function() {
-            if (typeof module !== 'undefined' && module.hot) return { type: 'webpack', hot: true };
-            if (typeof import.meta !== 'undefined' && import.meta.hot) return { type: 'vite', hot: true };
-            if (typeof System !== 'undefined') return { type: 'systemjs', hot: false };
-            if (typeof module !== 'undefined' && module.exports) return { type: 'commonjs', hot: false };
-            if (typeof importScripts === 'function') return { type: 'worker', hot: false };
-            return { type: 'unknown', hot: false };
-          })()
-        `,
+      // First check for Vite HMR (more specific)
+      const viteCheck = await client.Runtime.evaluate({
+        expression: `(function() {
+          try {
+            return typeof import.meta !== 'undefined' && import.meta.hot ? true : false;
+          } catch (e) {
+            return false;
+          }
+        })()`,
         returnByValue: true
       });
       
-      const moduleSystem = moduleDetection.result.value;
-      
-      if (moduleSystem.hot) {
-        // Try HMR (Hot Module Replacement)
-        const hmrResult = await client.Runtime.evaluate({
-          expression: `
-            (function() {
-              try {
-                // Webpack HMR
-                if (module.hot) {
-                  module.hot.accept();
-                  return { success: true, method: 'webpack' };
+      if (viteCheck.result.value === true) {
+        // Attempt Vite HMR
+        const viteResult = await client.Runtime.evaluate({
+          expression: `(function() {
+            try {
+              if (import.meta.hot) {
+                // Simulate HMR update
+                const url = '${sourceTarget.url}';
+                const path = new URL(url).pathname;
+                
+                // Trigger HMR update
+                import.meta.hot.accept();
+                
+                // Check for boundaries
+                const boundaries = [];
+                if (import.meta.hot.data && import.meta.hot.data._boundaries) {
+                  boundaries.push(...import.meta.hot.data._boundaries);
                 }
-                // Vite HMR
-                if (import.meta.hot) {
-                  import.meta.hot.accept();
-                  return { success: true, method: 'vite' };
-                }
-              } catch (e) {
-                return { success: false, error: e.message };
+                
+                return { 
+                  success: true, 
+                  reloadedModules: [path],
+                  boundaries: boundaries,
+                  hmrPayload: { type: 'update', path: path }
+                };
               }
-            })()
-          `,
+            } catch (e) {
+              return { success: false, error: e.message };
+            }
+          })()`,
           returnByValue: true
         });
         
-        if (hmrResult.result.value?.success) {
+        if (viteResult.result.value?.success) {
           return {
             success: true,
-            method: hmrResult.result.value.method,
-            reloadedModules: affectedModules
+            method: 'vite',
+            reloadedModules: viteResult.result.value.reloadedModules,
+            boundaries: viteResult.result.value.boundaries
+          };
+        }
+      }
+      
+      // Check for Webpack HMR
+      const webpackCheck = await client.Runtime.evaluate({
+        expression: `(function() {
+          try {
+            return typeof module !== 'undefined' && module.hot ? true : false;
+          } catch (e) {
+            return false;
+          }
+        })()`,
+        returnByValue: true
+      });
+      
+      if (webpackCheck.result.value === true) {
+        // Attempt Webpack HMR
+        const webpackResult = await client.Runtime.evaluate({
+          expression: `(function() {
+            try {
+              if (module.hot) {
+                module.hot.accept();
+                return { 
+                  success: true, 
+                  accepted: true,
+                  reloadedModules: ['${sourceTarget.url}']
+                };
+              }
+            } catch (e) {
+              return { success: false, error: e.message };
+            }
+          })()`,
+          returnByValue: true
+        });
+        
+        if (webpackResult.result.value?.success) {
+          return {
+            success: true,
+            method: 'webpack',
+            reloadedModules: webpackResult.result.value.reloadedModules
           };
         }
       }
