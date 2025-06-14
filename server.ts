@@ -590,6 +590,44 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId']
         }
+      },
+      {
+        name: 'analyze_errors',
+        description: 'Analyze and diagnose errors in a Chrome tab using Chrome DevTools Protocol. Provides comprehensive error analysis including runtime exceptions, syntax errors, network failures, and security issues with stack traces and source context.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to analyze',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            errorType: {
+              type: 'string',
+              enum: ['runtime', 'syntax', 'network', 'security', 'all'],
+              default: 'all',
+              description: 'Type of errors to analyze. runtime: JavaScript exceptions, syntax: Parse errors, network: Failed requests, security: CSP/CORS violations, all: All error types'
+            },
+            includeStackTrace: {
+              type: 'boolean',
+              default: true,
+              description: 'Whether to include full stack traces for errors'
+            },
+            includeSourceContext: {
+              type: 'boolean',
+              default: true,
+              description: 'Whether to include source code context around error locations'
+            },
+            timeRange: {
+              type: 'integer',
+              minimum: 0,
+              maximum: 3600,
+              default: 300,
+              description: 'Time range in seconds to analyze errors (0 = current only, max 3600 = 1 hour)'
+            }
+          },
+          required: ['tabId']
+        }
       }
     ];
     
@@ -675,6 +713,9 @@ export class ChromeDevToolsMCPServer {
       
       case 'analyze_runtime_state':
         return await this.analyzeRuntimeState(parameters);
+      
+      case 'analyze_errors':
+        return await this.analyzeErrors(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -5300,6 +5341,46 @@ export class ChromeDevToolsMCPServer {
     } catch (error: any) {
       return null;
     }
+  }
+
+  /**
+   * Analyze and diagnose errors in a tab
+   * Provides comprehensive error analysis with stack traces and context
+   */
+  public async analyzeErrors(parameters: any): Promise<any> {
+    const { tabId, errorType: _errorType, includeStackTrace: _includeStackTrace, includeSourceContext: _includeSourceContext, timeRange: _timeRange } = parameters;
+    
+    // Check if error analysis is enabled
+    const analysisEnabled = process.env.ERROR_ANALYSIS_ENABLED !== 'false';
+    if (!analysisEnabled) {
+      return {
+        success: false,
+        message: 'Error analysis is disabled. Set ERROR_ANALYSIS_ENABLED=true to enable error analysis features.',
+        errorAnalysis: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Error analysis is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // For now, return a stub implementation
+    // This will be fully implemented in Task 19.2
+    return {
+      success: false,
+      message: 'analyze_errors is not yet implemented. This tool will be available in Task 19.2.',
+      errorAnalysis: {
+        tabId,
+        timestamp: new Date().toISOString(),
+        error: {
+          type: 'NotImplemented',
+          message: 'Tool implementation pending'
+        }
+      }
+    };
   }
 }
 
