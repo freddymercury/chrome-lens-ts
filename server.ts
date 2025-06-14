@@ -28,6 +28,9 @@ export class ChromeDevToolsMCPServer {
   private consoleMessages: Map<string, any[]> = new Map();
   private networkLogs: Map<string, any[]> = new Map();
   private errors: Map<string, any[]> = new Map();
+  
+  // Source file registry for v1.1 debugging features
+  public sourceFiles: Map<string, Map<string, any>> = new Map();
 
   constructor() {
     // For now, we'll initialize this as a placeholder
@@ -930,6 +933,20 @@ export class ChromeDevToolsMCPServer {
       } catch (error: any) {
         if (LOG_LEVEL === 'debug') {
           console.log('Failed to enable Network domain:', error.message);
+        }
+      }
+
+      // Initialize source discovery for v1.1 debugging features
+      try {
+        await this.initializeSourceDiscovery(tabId, client);
+        enabledDomains.push('Debugger');
+        
+        if (LOG_LEVEL === 'debug') {
+          console.log('Source discovery initialized for debugging features');
+        }
+      } catch (error: any) {
+        if (LOG_LEVEL === 'debug') {
+          console.log('Failed to initialize source discovery:', error.message);
         }
       }
 
@@ -3495,6 +3512,119 @@ export class ChromeDevToolsMCPServer {
         }
       }
     };
+  }
+
+  /**
+   * Initialize source code discovery for a tab
+   * Enables Debugger domain and sets up event listeners
+   */
+  public async initializeSourceDiscovery(tabId: string, client: any): Promise<void> {
+    try {
+      // Enable Debugger domain to receive scriptParsed events
+      await client.Debugger.enable();
+      
+      // Initialize source registry for this tab if not exists
+      if (!this.sourceFiles.has(tabId)) {
+        this.sourceFiles.set(tabId, new Map());
+      }
+      
+      // Set up scriptParsed event listener
+      client.on('Debugger.scriptParsed', (params: any) => {
+        const sourceRegistry = this.sourceFiles.get(tabId);
+        if (!sourceRegistry) return;
+        
+        // Store source file information
+        sourceRegistry.set(params.scriptId, {
+          scriptId: params.scriptId,
+          url: params.url,
+          hasSourceMap: !!params.sourceMapURL,
+          sourceMapURL: params.sourceMapURL || undefined,
+          startLine: params.startLine,
+          startColumn: params.startColumn,
+          endLine: params.endLine,
+          endColumn: params.endColumn,
+          executionContextId: params.executionContextId,
+          hash: params.hash,
+          isLiveEdit: params.isLiveEdit || false,
+          length: params.length
+        });
+        
+        if (LOG_LEVEL === 'debug') {
+          console.log(`Source discovered: ${params.url} (${params.scriptId})`);
+        }
+      });
+      
+      // Also listen for scriptFailedToParse for error tracking
+      client.on('Debugger.scriptFailedToParse', (params: any) => {
+        if (LOG_LEVEL === 'debug') {
+          console.log(`Script failed to parse: ${params.url}`);
+        }
+      });
+      
+    } catch (error: any) {
+      console.error(`Failed to initialize source discovery for tab ${tabId}:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Get source file registry for a specific tab
+   */
+  public getSourceRegistry(tabId: string): Map<string, any> {
+    if (!this.sourceFiles.has(tabId)) {
+      this.sourceFiles.set(tabId, new Map());
+    }
+    return this.sourceFiles.get(tabId)!;
+  }
+
+  /**
+   * Resolve source target by URL pattern or script ID
+   */
+  public async resolveSourceTarget(tabId: string, sourceId: string): Promise<any> {
+    const registry = this.getSourceRegistry(tabId);
+    
+    // First, try direct script ID match
+    if (registry.has(sourceId)) {
+      const source = registry.get(sourceId);
+      return {
+        ...source,
+        originalSource: !!source.originalUrl
+      };
+    }
+    
+    // Then, try URL pattern matching
+    for (const [_scriptId, source] of registry.entries()) {
+      // Check if the sourceId appears in the URL
+      if (source.url && source.url.includes(sourceId)) {
+        return {
+          ...source,
+          originalSource: !!source.originalUrl
+        };
+      }
+      
+      // Check original source URL if available
+      if (source.originalUrl && source.originalUrl.includes(sourceId)) {
+        return {
+          ...source,
+          originalSource: true
+        };
+      }
+    }
+    
+    // No match found
+    return null;
+  }
+
+  /**
+   * Clean up source registry for a tab
+   */
+  public cleanupSourceRegistry(tabId: string): void {
+    if (this.sourceFiles.has(tabId)) {
+      this.sourceFiles.delete(tabId);
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Cleaned up source registry for tab ${tabId}`);
+      }
+    }
   }
 }
 
