@@ -491,6 +491,30 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId', 'operation']
         }
+      },
+      {
+        name: 'debug_step_control',
+        description: 'Control step debugging execution using Chrome DevTools Protocol. Supports pause, resume, and step operations (over, into, out) for precise debugging control during breakpoint hits.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to control',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            action: {
+              type: 'string',
+              enum: ['pause', 'resume', 'stepOver', 'stepInto', 'stepOut'],
+              description: 'The debugging action to perform. pause: Pause execution, resume: Continue execution, stepOver: Step over next function call, stepInto: Step into next function call, stepOut: Step out of current function'
+            },
+            callFrameId: {
+              type: 'string',
+              description: 'The call frame ID from the paused state. Required for step actions (stepOver, stepInto, stepOut) but not for pause/resume.'
+            }
+          },
+          required: ['tabId', 'action']
+        }
       }
     ];
     
@@ -567,6 +591,9 @@ export class ChromeDevToolsMCPServer {
       
       case 'manage_breakpoints':
         return await this.manageBreakpoints(parameters);
+      
+      case 'debug_step_control':
+        return await this.debugStepControl(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -4358,6 +4385,48 @@ export class ChromeDevToolsMCPServer {
         }
       };
     }
+  }
+
+  /**
+   * Control step debugging execution
+   * Uses Chrome DevTools Protocol to pause, resume, and step through code
+   */
+  public async debugStepControl(parameters: any): Promise<any> {
+    const { tabId, action, callFrameId: _callFrameId } = parameters;
+    
+    // Check if debugger is enabled
+    const debuggerEnabled = process.env.DEBUGGER_ENABLED !== 'false';
+    if (!debuggerEnabled) {
+      return {
+        success: false,
+        message: 'Debugger is disabled. Set DEBUGGER_ENABLED=true to enable debugging features.',
+        stepControl: {
+          tabId,
+          action,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Debugger is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // For now, return a stub implementation
+    // This will be fully implemented in Task 17.4
+    return {
+      success: false,
+      message: 'debug_step_control is not yet implemented. This tool will be available in Task 17.4.',
+      stepControl: {
+        tabId,
+        action,
+        timestamp: new Date().toISOString(),
+        error: {
+          type: 'NotImplemented',
+          message: 'Tool implementation pending'
+        }
+      }
+    };
   }
 }
 
