@@ -892,6 +892,64 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId', 'eventTypes']
         }
+      },
+      {
+        name: 'watch_state_changes',
+        description: 'Watch and monitor state changes in a Chrome tab using Chrome DevTools Protocol. Track changes to specific JavaScript expressions, variables, and object properties over time for debugging and analysis.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to monitor',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            expressions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                    description: 'A friendly name for this watch expression'
+                  },
+                  expression: {
+                    type: 'string',
+                    description: 'JavaScript expression to evaluate and watch for changes'
+                  },
+                  context: {
+                    type: 'string',
+                    enum: ['global', 'local', 'closure'],
+                    default: 'global',
+                    description: 'The context in which to evaluate the expression'
+                  }
+                },
+                required: ['name', 'expression']
+              },
+              minItems: 1,
+              maxItems: 100,
+              description: 'Array of expressions to watch for state changes'
+            },
+            interval: {
+              type: 'integer',
+              minimum: 100,
+              maximum: 10000,
+              default: 500,
+              description: 'Polling interval in milliseconds to check for state changes'
+            },
+            deepWatch: {
+              type: 'boolean',
+              default: false,
+              description: 'Whether to perform deep equality checks on objects and arrays'
+            },
+            includeCallStack: {
+              type: 'boolean',
+              default: false,
+              description: 'Whether to capture call stack when changes are detected'
+            }
+          },
+          required: ['tabId', 'expressions']
+        }
       }
     ];
     
@@ -983,6 +1041,9 @@ export class ChromeDevToolsMCPServer {
       
       case 'monitor_events':
         return await this.monitorEvents(parameters);
+      
+      case 'watch_state_changes':
+        return await this.watchStateChanges(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -6207,6 +6268,46 @@ export class ChromeDevToolsMCPServer {
     return {
       success: false,
       error: 'No event monitor found for this tab'
+    };
+  }
+
+  /**
+   * Watch and monitor state changes in a Chrome tab
+   * Track changes to specific JavaScript expressions over time
+   */
+  public async watchStateChanges(parameters: any): Promise<any> {
+    const { tabId, expressions: _expressions, interval: _interval, deepWatch: _deepWatch, includeCallStack: _includeCallStack } = parameters;
+    
+    // Check if state monitoring is enabled
+    const monitoringEnabled = process.env.STATE_MONITORING_ENABLED !== 'false';
+    if (!monitoringEnabled) {
+      return {
+        success: false,
+        message: 'State monitoring is disabled. Set STATE_MONITORING_ENABLED=true to enable state monitoring features.',
+        stateWatching: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'State monitoring is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // For now, return a stub implementation
+    // This will be fully implemented in Task 20.4
+    return {
+      success: false,
+      message: 'watch_state_changes is not yet implemented. This tool will be available in Task 20.4.',
+      stateWatching: {
+        tabId,
+        timestamp: new Date().toISOString(),
+        error: {
+          type: 'NotImplemented',
+          message: 'Tool implementation pending'
+        }
+      }
     };
   }
 
