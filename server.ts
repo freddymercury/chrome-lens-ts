@@ -518,6 +518,40 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId', 'action']
         }
+      },
+      {
+        name: 'inspect_variables',
+        description: 'Inspect runtime variables and object properties using Chrome DevTools Protocol. Can inspect by objectId, evaluate expressions, or explore variables in the current call frame during debugging.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to inspect',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            objectId: {
+              type: 'string',
+              description: 'Runtime.RemoteObjectId - The ID of the object to inspect. Either objectId or expression must be provided.'
+            },
+            expression: {
+              type: 'string',
+              description: 'JavaScript expression to evaluate. Either objectId or expression must be provided.'
+            },
+            callFrameId: {
+              type: 'string',
+              description: 'The call frame ID to evaluate the expression in. Only valid when debugger is paused at a breakpoint.'
+            },
+            depth: {
+              type: 'integer',
+              minimum: 0,
+              maximum: 10,
+              default: 2,
+              description: 'Maximum depth to traverse when inspecting nested objects. Default is 2.'
+            }
+          },
+          required: ['tabId']
+        }
       }
     ];
     
@@ -597,6 +631,9 @@ export class ChromeDevToolsMCPServer {
       
       case 'debug_step_control':
         return await this.debugStepControl(parameters);
+      
+      case 'inspect_variables':
+        return await this.inspectVariables(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -4657,6 +4694,46 @@ export class ChromeDevToolsMCPServer {
         }
       };
     }
+  }
+
+  /**
+   * Inspect runtime variables and object properties
+   * Uses Chrome DevTools Protocol Runtime domain to evaluate and inspect objects
+   */
+  public async inspectVariables(parameters: any): Promise<any> {
+    const { tabId, objectId: _objectId, expression: _expression, callFrameId: _callFrameId, depth: _depth } = parameters;
+    
+    // Check if runtime inspection is enabled
+    const inspectionEnabled = process.env.RUNTIME_INSPECTION_ENABLED !== 'false';
+    if (!inspectionEnabled) {
+      return {
+        success: false,
+        message: 'Runtime inspection is disabled. Set RUNTIME_INSPECTION_ENABLED=true to enable inspection features.',
+        variableInspection: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Runtime inspection is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // For now, return a stub implementation
+    // This will be fully implemented in Task 18.2
+    return {
+      success: false,
+      message: 'inspect_variables is not yet implemented. This tool will be available in Task 18.2.',
+      variableInspection: {
+        tabId,
+        timestamp: new Date().toISOString(),
+        error: {
+          type: 'NotImplemented',
+          message: 'Tool implementation pending'
+        }
+      }
+    };
   }
 }
 
