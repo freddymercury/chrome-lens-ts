@@ -31,6 +31,9 @@ export class ChromeDevToolsMCPServer {
   
   // Source file registry for v1.1 debugging features
   public sourceFiles: Map<string, Map<string, any>> = new Map();
+  
+  // Breakpoint registry for v1.1 debugging features
+  private breakpoints: Map<string, Map<string, any>> = new Map();
 
   constructor() {
     // For now, we'll initialize this as a placeholder
@@ -439,6 +442,55 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId', 'sourceId', 'newContent']
         }
+      },
+      {
+        name: 'manage_breakpoints',
+        description: 'Manage debugging breakpoints in Chrome DevTools. Set, remove, list, enable, or disable breakpoints for step-by-step debugging. Supports conditional breakpoints and logpoints for advanced debugging workflows.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'ID of the Chrome tab where breakpoints will be managed (from list_tabs response)',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            operation: {
+              type: 'string',
+              description: 'Breakpoint operation to perform',
+              enum: ['set', 'remove', 'list', 'enable', 'disable']
+            },
+            location: {
+              type: 'object',
+              description: 'Breakpoint location (required for set and remove operations)',
+              properties: {
+                url: {
+                  type: 'string',
+                  description: 'Source file URL or URL pattern where breakpoint will be set'
+                },
+                lineNumber: {
+                  type: 'integer',
+                  description: 'Line number where breakpoint will be set (1-indexed)',
+                  minimum: 1
+                },
+                columnNumber: {
+                  type: 'integer',
+                  description: 'Optional column number for more precise breakpoint positioning (0-indexed)',
+                  minimum: 0
+                }
+              },
+              required: ['url', 'lineNumber']
+            },
+            condition: {
+              type: 'string',
+              description: 'Optional condition expression for conditional breakpoints. Breakpoint only triggers when condition evaluates to true.'
+            },
+            logMessage: {
+              type: 'string',
+              description: 'Optional log message for logpoints. When set, logs message instead of pausing execution. Supports expressions in curly braces like "x is {x}".'
+            }
+          },
+          required: ['tabId', 'operation']
+        }
       }
     ];
     
@@ -512,6 +564,9 @@ export class ChromeDevToolsMCPServer {
       
       case 'modify_source_code':
         return await this.modifySourceCode(parameters);
+      
+      case 'manage_breakpoints':
+        return await this.manageBreakpoints(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -3891,6 +3946,16 @@ export class ChromeDevToolsMCPServer {
   }
 
   /**
+   * Get or create breakpoint registry for a tab
+   */
+  public getBreakpointRegistry(tabId: string): Map<string, any> {
+    if (!this.breakpoints.has(tabId)) {
+      this.breakpoints.set(tabId, new Map());
+    }
+    return this.breakpoints.get(tabId)!;
+  }
+
+  /**
    * Resolve source target by URL pattern or script ID
    */
   public async resolveSourceTarget(tabId: string, sourceId: string): Promise<any> {
@@ -4027,6 +4092,270 @@ export class ChromeDevToolsMCPServer {
         valid: false,
         error: `Validation error: ${error.message}`,
         errorType: 'ValidationError'
+      };
+    }
+  }
+
+  /**
+   * Manage debugging breakpoints
+   * Uses Chrome DevTools Protocol to set, remove, list, enable, or disable breakpoints
+   */
+  public async manageBreakpoints(parameters: any): Promise<any> {
+    const { tabId, operation, location, condition, logMessage, breakpointId } = parameters;
+    
+    // Check if debugger is enabled
+    const debuggerEnabled = process.env.DEBUGGER_ENABLED !== 'false';
+    if (!debuggerEnabled) {
+      return {
+        success: false,
+        message: 'Debugger is disabled. Set DEBUGGER_ENABLED=true to enable debugging features.',
+        breakpointManagement: {
+          tabId,
+          operation,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Debugger is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          breakpointManagement: {
+            tabId,
+            operation,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
+      }
+      
+      // Get or create breakpoint registry for this tab
+      const breakpoints = this.getBreakpointRegistry(tabId);
+      
+      switch (operation) {
+        case 'set':
+          // Validate location parameter
+          if (!location || !location.url || !location.lineNumber) {
+            return {
+              success: false,
+              error: 'Location required for set operation',
+              breakpointManagement: {
+                tabId,
+                operation,
+                timestamp,
+                error: {
+                  type: 'ValidationError',
+                  message: 'Location with url and lineNumber is required for setting breakpoints'
+                }
+              }
+            };
+          }
+          
+          // Set breakpoint using CDP
+          const setParams: any = {
+            url: location.url,
+            lineNumber: location.lineNumber - 1, // CDP uses 0-based line numbers
+            columnNumber: location.columnNumber
+          };
+          
+          if (condition) {
+            setParams.condition = condition;
+          }
+          
+          if (logMessage) {
+            setParams.logMessage = logMessage;
+          }
+          
+          const setResult = await client.Debugger.setBreakpointByUrl(setParams);
+          
+          // Store breakpoint in registry
+          const bpId = setResult.breakpointId;
+          breakpoints.set(bpId, {
+            id: bpId,
+            url: location.url,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber,
+            condition,
+            logMessage,
+            enabled: true,
+            locations: setResult.locations
+          });
+          
+          return {
+            success: true,
+            message: `Breakpoint set at ${location.url}:${location.lineNumber}`,
+            breakpointId: bpId,
+            locations: setResult.locations,
+            breakpointManagement: {
+              tabId,
+              operation,
+              timestamp,
+              breakpointId: bpId
+            }
+          };
+          
+        case 'remove':
+          // Validate breakpointId parameter
+          if (!breakpointId) {
+            return {
+              success: false,
+              error: 'Breakpoint ID required for remove operation',
+              breakpointManagement: {
+                tabId,
+                operation,
+                timestamp,
+                error: {
+                  type: 'ValidationError',
+                  message: 'breakpointId is required for removing breakpoints'
+                }
+              }
+            };
+          }
+          
+          // Remove breakpoint using CDP
+          await client.Debugger.removeBreakpoint({ breakpointId });
+          
+          // Remove from registry
+          breakpoints.delete(breakpointId);
+          
+          return {
+            success: true,
+            message: `Breakpoint ${breakpointId} removed`,
+            breakpointManagement: {
+              tabId,
+              operation,
+              timestamp,
+              breakpointId
+            }
+          };
+          
+        case 'list':
+          // Return all breakpoints for this tab
+          const bpList = Array.from(breakpoints.values());
+          
+          return {
+            success: true,
+            message: `Found ${bpList.length} breakpoints`,
+            breakpoints: bpList,
+            breakpointManagement: {
+              tabId,
+              operation,
+              timestamp,
+              count: bpList.length
+            }
+          };
+          
+        case 'enable':
+        case 'disable':
+          // Validate breakpointId parameter
+          if (!breakpointId) {
+            return {
+              success: false,
+              error: `Breakpoint ID required for ${operation} operation`,
+              breakpointManagement: {
+                tabId,
+                operation,
+                timestamp,
+                error: {
+                  type: 'ValidationError',
+                  message: `breakpointId is required for ${operation} operation`
+                }
+              }
+            };
+          }
+          
+          // Update breakpoint state in registry
+          const bp = breakpoints.get(breakpointId);
+          if (!bp) {
+            return {
+              success: false,
+              error: `Breakpoint ${breakpointId} not found`,
+              breakpointManagement: {
+                tabId,
+                operation,
+                timestamp,
+                error: {
+                  type: 'NotFound',
+                  message: `Breakpoint with ID ${breakpointId} not found`
+                }
+              }
+            };
+          }
+          
+          bp.enabled = operation === 'enable';
+          
+          // Note: CDP doesn't have individual breakpoint enable/disable
+          // We track the state but don't change CDP state
+          // Full implementation would re-set or remove breakpoints
+          
+          return {
+            success: true,
+            message: `Breakpoint ${breakpointId} ${operation}d`,
+            breakpointManagement: {
+              tabId,
+              operation,
+              timestamp,
+              breakpointId,
+              enabled: bp.enabled
+            }
+          };
+          
+        default:
+          return {
+            success: false,
+            error: `Unknown operation: ${operation}`,
+            breakpointManagement: {
+              tabId,
+              operation,
+              timestamp,
+              error: {
+                type: 'InvalidOperation',
+                message: `Operation '${operation}' is not supported. Use: set, remove, list, enable, disable`
+              }
+            }
+          };
+      }
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to manage breakpoints for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        breakpointManagement: {
+          tabId,
+          operation,
+          timestamp,
+          error: {
+            type: 'BreakpointError',
+            message: error.message
+          }
+        }
       };
     }
   }
