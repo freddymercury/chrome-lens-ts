@@ -5348,7 +5348,13 @@ export class ChromeDevToolsMCPServer {
    * Provides comprehensive error analysis with stack traces and context
    */
   public async analyzeErrors(parameters: any): Promise<any> {
-    const { tabId, errorType: _errorType, includeStackTrace: _includeStackTrace, includeSourceContext: _includeSourceContext, timeRange: _timeRange } = parameters;
+    const { 
+      tabId, 
+      errorType = 'all', 
+      includeStackTrace = true, 
+      includeSourceContext = true, 
+      timeRange = 300 
+    } = parameters;
     
     // Check if error analysis is enabled
     const analysisEnabled = process.env.ERROR_ANALYSIS_ENABLED !== 'false';
@@ -5367,20 +5373,320 @@ export class ChromeDevToolsMCPServer {
       };
     }
     
-    // For now, return a stub implementation
-    // This will be fully implemented in Task 19.2
-    return {
-      success: false,
-      message: 'analyze_errors is not yet implemented. This tool will be available in Task 19.2.',
-      errorAnalysis: {
-        tabId,
-        timestamp: new Date().toISOString(),
-        error: {
-          type: 'NotImplemented',
-          message: 'Tool implementation pending'
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    const timestamp = new Date().toISOString();
+    const now = Date.now();
+    const cutoffTime = now - (timeRange * 1000);
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          errorAnalysis: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
+      }
+      
+      const errors: any[] = [];
+      const summary = {
+        totalErrors: 0,
+        byType: {
+          runtime: 0,
+          syntax: 0,
+          network: 0,
+          security: 0
+        }
+      };
+      
+      // Collect runtime and syntax errors
+      if (errorType === 'all' || errorType === 'runtime' || errorType === 'syntax') {
+        const storedErrors = this.errors.get(tabId) || [];
+        const relevantErrors = storedErrors.filter((err: any) => {
+          const errTime = new Date(err.timestamp).getTime();
+          return errTime >= cutoffTime && 
+                 (errorType === 'all' || err.type === errorType);
+        });
+        
+        for (const err of relevantErrors) {
+          const errorInfo: any = {
+            ...err,
+            age: Math.floor((now - new Date(err.timestamp).getTime()) / 1000)
+          };
+          
+          // Get source context if requested and scriptId is available
+          if (includeSourceContext && err.scriptId) {
+            try {
+              const sourceResult = await client.Debugger.getScriptSource({
+                scriptId: err.scriptId
+              });
+              
+              if (sourceResult.scriptSource && err.lineNumber) {
+                errorInfo.sourceContext = this.getSourceContext(
+                  sourceResult.scriptSource,
+                  err.lineNumber,
+                  3 // Context lines before/after
+                );
+              }
+            } catch (e) {
+              // Source might not be available
+            }
+          }
+          
+          errors.push(errorInfo);
+          summary.byType[err.type as keyof typeof summary.byType]++;
+          summary.totalErrors++;
         }
       }
+      
+      // Collect network errors
+      if (errorType === 'all' || errorType === 'network') {
+        const networkLogs = this.networkLogs.get(tabId) || [];
+        const networkErrors = networkLogs.filter((log: any) => {
+          const logTime = new Date(log.timestamp).getTime();
+          return logTime >= cutoffTime && 
+                 (log.status >= 400 || log.errorText);
+        });
+        
+        for (const netErr of networkErrors) {
+          errors.push({
+            type: 'network',
+            timestamp: netErr.timestamp,
+            url: netErr.url,
+            method: netErr.method,
+            status: netErr.status,
+            statusText: netErr.statusText,
+            errorText: netErr.errorText || `HTTP ${netErr.status}`,
+            requestId: netErr.requestId,
+            age: Math.floor((now - new Date(netErr.timestamp).getTime()) / 1000)
+          });
+          summary.byType.network++;
+          summary.totalErrors++;
+        }
+      }
+      
+      // Collect security errors (filtered from general errors)
+      if (errorType === 'all' || errorType === 'security') {
+        const storedErrors = this.errors.get(tabId) || [];
+        const securityErrors = storedErrors.filter((err: any) => {
+          const errTime = new Date(err.timestamp).getTime();
+          return errTime >= cutoffTime && err.type === 'security';
+        });
+        
+        for (const secErr of securityErrors) {
+          errors.push({
+            ...secErr,
+            age: Math.floor((now - new Date(secErr.timestamp).getTime()) / 1000)
+          });
+          summary.byType.security++;
+          summary.totalErrors++;
+        }
+      }
+      
+      // Sort errors by timestamp (newest first)
+      errors.sort((a, b) => 
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+      
+      // Group similar errors
+      const errorGroups = this.groupSimilarErrors(errors);
+      
+      // Detect patterns and provide recommendations
+      const patterns = this.detectErrorPatterns(errors);
+      const recommendations = this.getErrorRecommendations(patterns, summary);
+      
+      return {
+        success: true,
+        message: `Analyzed ${summary.totalErrors} errors in tab ${tabId}`,
+        errorAnalysis: {
+          tabId,
+          timestamp,
+          errorType,
+          timeRange,
+          errors,
+          errorGroups,
+          summary,
+          patterns,
+          recommendations
+        }
+      };
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to analyze errors for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        errorAnalysis: {
+          tabId,
+          timestamp,
+          error: {
+            type: 'AnalysisError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+  
+  /**
+   * Get source code context around an error line
+   */
+  private getSourceContext(source: string, lineNumber: number, contextLines: number): any {
+    const lines = source.split('\n');
+    const startLine = Math.max(0, lineNumber - contextLines - 1);
+    const endLine = Math.min(lines.length, lineNumber + contextLines);
+    
+    const contextLinesArray = [];
+    for (let i = startLine; i < endLine; i++) {
+      contextLinesArray.push({
+        number: i + 1,
+        text: lines[i],
+        isError: i + 1 === lineNumber
+      });
+    }
+    
+    return {
+      lines: lines.slice(startLine, endLine),
+      lineNumbers: contextLinesArray,
+      errorLine: lineNumber
     };
+  }
+  
+  /**
+   * Group similar errors together
+   */
+  private groupSimilarErrors(errors: any[]): any[] {
+    const groups = new Map<string, any>();
+    
+    for (const error of errors) {
+      // Create a key based on error characteristics
+      const key = `${error.type}:${error.message}:${error.url || ''}:${error.lineNumber || ''}`;
+      
+      if (!groups.has(key)) {
+        groups.set(key, {
+          type: error.type,
+          message: error.message,
+          url: error.url,
+          lineNumber: error.lineNumber,
+          count: 0,
+          firstSeen: error.timestamp,
+          lastSeen: error.timestamp,
+          examples: []
+        });
+      }
+      
+      const group = groups.get(key)!;
+      group.count++;
+      group.lastSeen = error.timestamp;
+      if (group.examples.length < 3) {
+        group.examples.push(error);
+      }
+    }
+    
+    return Array.from(groups.values())
+      .sort((a, b) => b.count - a.count); // Sort by frequency
+  }
+  
+  /**
+   * Detect common error patterns
+   */
+  private detectErrorPatterns(errors: any[]): string[] {
+    const patterns = new Set<string>();
+    
+    for (const error of errors) {
+      if (error.type === 'runtime') {
+        // Null/undefined reference errors
+        if (/Cannot read prop|of undefined|of null/i.test(error.message)) {
+          patterns.add('null-reference');
+        }
+        // Type errors
+        if (/is not a function|is not defined/i.test(error.message)) {
+          patterns.add('type-error');
+        }
+        // Promise rejections
+        if (/unhandled.*rejection|promise/i.test(error.message)) {
+          patterns.add('unhandled-promise');
+        }
+      }
+      
+      if (error.type === 'network') {
+        if (error.status === 404) patterns.add('missing-resources');
+        if (error.status >= 500) patterns.add('server-errors');
+        if (error.errorText?.includes('CORS')) patterns.add('cors-issues');
+      }
+      
+      if (error.type === 'security') {
+        if (error.violationType === 'CSP') patterns.add('csp-violations');
+        if (error.violationType === 'CORS') patterns.add('cors-issues');
+      }
+    }
+    
+    return Array.from(patterns);
+  }
+  
+  /**
+   * Get recommendations based on error patterns
+   */
+  private getErrorRecommendations(patterns: string[], summary: any): string[] {
+    const recommendations = [];
+    
+    if (patterns.includes('null-reference')) {
+      recommendations.push(
+        'Multiple null/undefined reference errors detected. Consider adding null checks or using optional chaining (?.).'
+      );
+    }
+    
+    if (patterns.includes('type-error')) {
+      recommendations.push(
+        'Type-related errors found. Consider using TypeScript or adding runtime type validation.'
+      );
+    }
+    
+    if (patterns.includes('unhandled-promise')) {
+      recommendations.push(
+        'Unhandled promise rejections detected. Add .catch() handlers or use try/catch with async/await.'
+      );
+    }
+    
+    if (patterns.includes('cors-issues')) {
+      recommendations.push(
+        'CORS issues detected. Check server CORS configuration and ensure proper headers are set.'
+      );
+    }
+    
+    if (patterns.includes('server-errors')) {
+      recommendations.push(
+        'Multiple server errors (5xx) detected. Check server logs and health.'
+      );
+    }
+    
+    if (summary.byType.network > 10) {
+      recommendations.push(
+        'High number of network errors. Consider implementing retry logic and better error handling.'
+      );
+    }
+    
+    return recommendations;
   }
 }
 
