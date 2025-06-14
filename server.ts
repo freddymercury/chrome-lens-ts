@@ -1605,6 +1605,7 @@ export class ChromeDevToolsMCPServer {
 
       // Enable basic domains for monitoring
       const enabledDomains = [];
+      const warnings: string[] = [];
       
       try {
         // Use Runtime.consoleAPICalled instead of deprecated Console domain
@@ -1682,6 +1683,85 @@ export class ChromeDevToolsMCPServer {
         
         if (LOG_LEVEL === 'debug') {
           console.log('Runtime domain enabled with console message and exception listeners');
+        }
+        
+        // Install global error handlers for better error capture (v1.1.1-BF3.1)
+        const installErrorHandlers = parameters.options?.errors !== false;
+        if (installErrorHandlers) {
+          try {
+            // Install window.onerror handler
+            await client.Runtime.evaluate({
+              expression: `
+                (function() {
+                  // Store original handler if it exists
+                  if (typeof window.onerror === 'function') {
+                    window._originalOnError = window.onerror;
+                  }
+                  
+                  window.onerror = function(message, source, lineno, colno, error) {
+                    // Call original handler if it exists
+                    if (window._originalOnError) {
+                      window._originalOnError.apply(this, arguments);
+                    }
+                    
+                    // Log to console so Chrome DevTools captures it
+                    console.error('[Global Error]', {
+                      message: message,
+                      source: source,
+                      line: lineno,
+                      column: colno,
+                      stack: error ? error.stack : null
+                    });
+                    
+                    return true; // Prevent default browser error handling
+                  };
+                  
+                  return 'window.onerror handler installed';
+                })()
+              `,
+              awaitPromise: true
+            });
+            
+            // Install unhandledrejection handler
+            await client.Runtime.evaluate({
+              expression: `
+                (function() {
+                  // Store original handler if it exists
+                  const originalHandler = window.onunhandledrejection;
+                  
+                  window.addEventListener('unhandledrejection', function(event) {
+                    // Call original handler if it exists
+                    if (originalHandler) {
+                      originalHandler.call(window, event);
+                    }
+                    
+                    // Log to console so Chrome DevTools captures it
+                    console.error('[Unhandled Promise Rejection]', {
+                      reason: event.reason,
+                      promise: event.promise,
+                      stack: event.reason && event.reason.stack ? event.reason.stack : null
+                    });
+                  });
+                  
+                  return 'unhandledrejection handler installed';
+                })()
+              `,
+              awaitPromise: true
+            });
+            
+            if (LOG_LEVEL === 'debug') {
+              console.log('Global error handlers installed successfully');
+            }
+          } catch (handlerError: any) {
+            if (LOG_LEVEL === 'debug') {
+              console.log('Failed to install global error handlers:', handlerError.message);
+            }
+            // Don't fail the connection if handler installation fails
+            warnings.push(`Failed to install global error handler: ${handlerError.message}`);
+            if (!enabledDomains.includes('ErrorHandlers')) {
+              enabledDomains.push('ErrorHandlers (partial)');
+            }
+          }
         }
       } catch (error: any) {
         if (LOG_LEVEL === 'debug') {
@@ -1771,6 +1851,8 @@ export class ChromeDevToolsMCPServer {
         if (LOG_LEVEL === 'debug') {
           console.log('Failed to initialize source discovery:', error.message);
         }
+        // Don't fail the entire connection if source discovery fails
+        warnings.push(`Failed to initialize source discovery: ${error.message}`);
       }
 
       if (LOG_LEVEL === 'debug') {
@@ -1790,7 +1872,8 @@ export class ChromeDevToolsMCPServer {
           client: 'CDP_CLIENT_CONNECTED', // Don't expose actual client object
           timestamp: new Date().toISOString()
         },
-        domains: enabledDomains
+        domains: enabledDomains,
+        warnings: warnings.length > 0 ? warnings : undefined
       };
     } catch (error: any) {
       if (LOG_LEVEL === 'debug') {
@@ -1848,6 +1931,9 @@ export class ChromeDevToolsMCPServer {
     if (parameters.port !== undefined) {
       connectionParams.port = parameters.port;
     }
+    if (parameters.options !== undefined) {
+      connectionParams.options = parameters.options;
+    }
 
     try {
       // Call connectToTab to establish connection
@@ -1881,7 +1967,8 @@ export class ChromeDevToolsMCPServer {
           timestamp: new Date().toISOString(),
           status: connectionResult.success ? 'active' : 'failed',
           domains: connectionResult.domains || [],
-          error: connectionResult.connection.error || undefined
+          error: connectionResult.connection.error || undefined,
+          warnings: connectionResult.warnings || undefined
         }
       };
     } catch (error: any) {
@@ -4972,7 +5059,9 @@ export class ChromeDevToolsMCPServer {
       });
       
     } catch (error: any) {
-      console.error(`Failed to initialize source discovery for tab ${tabId}:`, error.message);
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to initialize source discovery for tab ${tabId}:`, error.message);
+      }
       throw error;
     }
   }
