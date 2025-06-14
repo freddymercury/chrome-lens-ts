@@ -403,6 +403,39 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId']
         }
+      },
+      {
+        name: 'modify_source_code',
+        description: 'Modify source code in real-time with hot reload support. Enables LLM-driven code modification and immediate testing of fixes. Essential for dynamic debugging workflows.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'ID of the Chrome tab where source code will be modified (from list_tabs response)',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            sourceId: {
+              type: 'string',
+              description: 'Script ID or URL pattern to identify the source file to modify. Use list_source_files to get available source IDs.'
+            },
+            newContent: {
+              type: 'string',
+              description: 'The modified source code content to apply. Must be valid JavaScript/TypeScript/CSS/HTML depending on file type.'
+            },
+            hotReload: {
+              type: 'boolean',
+              description: 'Whether to trigger hot reload after modification. When true, attempts to reload just the modified module without full page refresh.',
+              default: true
+            },
+            validateSyntax: {
+              type: 'boolean',
+              description: 'Whether to validate syntax before applying changes. When true, prevents applying changes that would cause syntax errors.',
+              default: true
+            }
+          },
+          required: ['tabId', 'sourceId', 'newContent']
+        }
       }
     ];
     
@@ -473,6 +506,9 @@ export class ChromeDevToolsMCPServer {
       
       case 'list_source_files':
         return await this.listSourceFiles(parameters);
+      
+      case 'modify_source_code':
+        return await this.modifySourceCode(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -3417,6 +3453,48 @@ export class ChromeDevToolsMCPServer {
         }
       };
     }
+  }
+
+  /**
+   * Modify source code in real-time with hot reload support
+   * Uses Chrome DevTools Protocol to modify JavaScript/TypeScript/CSS code
+   */
+  public async modifySourceCode(parameters: any): Promise<any> {
+    const { tabId, sourceId, newContent: _newContent, hotReload: _hotReload = true, validateSyntax: _validateSyntax = true } = parameters;
+    
+    // Check if code modification is enabled
+    const codeModificationEnabled = process.env.CODE_MODIFICATION_ENABLED !== 'false';
+    if (!codeModificationEnabled) {
+      return {
+        success: false,
+        message: 'Code modification is disabled. Set CODE_MODIFICATION_ENABLED=true to enable this feature.',
+        sourceModification: {
+          tabId,
+          sourceId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Code modification is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // For now, return a stub implementation
+    // This will be fully implemented in Task 16.3
+    return {
+      success: false,
+      message: 'modify_source_code is not yet implemented. This tool will be available in Task 16.3.',
+      sourceModification: {
+        tabId,
+        sourceId,
+        timestamp: new Date().toISOString(),
+        error: {
+          type: 'NotImplemented',
+          message: 'Tool implementation pending'
+        }
+      }
+    };
   }
 }
 
