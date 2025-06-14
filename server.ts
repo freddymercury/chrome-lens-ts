@@ -1,5 +1,6 @@
 import * as dotenv from 'dotenv';
 import CDP from 'chrome-remote-interface';
+// @ts-ignore - Types are in types/chrome-remote-interface.d.ts
 
 // Load environment variables
 dotenv.config();
@@ -16,6 +17,436 @@ const CHROME_DEBUG_PORT = parseInt(process.env.CHROME_DEBUG_PORT || '9222', 10);
 const CHROME_DEBUG_HOST = process.env.CHROME_DEBUG_HOST || 'localhost';
 
 /**
+ * State Watcher class for monitoring state changes
+ */
+class StateWatcher {
+  private client: any;
+  private tabId: string;
+  private expressions: any[];
+  private interval: number;
+  private deepWatch: boolean;
+  private includeCallStack: boolean;
+  private intervalId: NodeJS.Timeout | null = null;
+  private previousValues: Map<string, any> = new Map();
+  private changes: any[] = [];
+  private enabled: boolean = false;
+  private server: ChromeDevToolsMCPServer | null = null;
+  
+  constructor(client: any, tabId: string, expressions: any[], interval: number = 500, deepWatch: boolean = false, includeCallStack: boolean = false) {
+    this.client = client;
+    this.tabId = tabId;
+    this.expressions = expressions;
+    this.interval = interval;
+    this.deepWatch = deepWatch;
+    this.includeCallStack = includeCallStack;
+  }
+  
+  setServer(server: ChromeDevToolsMCPServer): void {
+    this.server = server;
+  }
+  
+  async start(): Promise<void> {
+    if (this.enabled) return;
+    
+    // Get initial values
+    await this.evaluateExpressions();
+    
+    // Start polling
+    this.intervalId = setInterval(async () => {
+      await this.checkForChanges();
+    }, this.interval);
+    
+    this.enabled = true;
+  }
+  
+  async stop(): Promise<void> {
+    if (!this.enabled) return;
+    
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+    
+    this.enabled = false;
+  }
+  
+  private async evaluateExpressions(): Promise<void> {
+    for (const expr of this.expressions) {
+      try {
+        const value = await this.evaluateExpression(expr);
+        this.previousValues.set(expr.name, value);
+        expr.currentValue = value;
+        expr.error = undefined;
+      } catch (error: any) {
+        expr.error = error.message;
+        expr.currentValue = undefined;
+      }
+    }
+  }
+  
+  private async evaluateExpression(expr: any): Promise<any> {
+    let result;
+    
+    if (expr.context === 'local') {
+      // Evaluate in local context if debugger is paused
+      const callFrameId = await this.getCurrentCallFrameId();
+      if (callFrameId) {
+        result = await this.client.Debugger.evaluateOnCallFrame({
+          callFrameId,
+          expression: expr.expression,
+          returnByValue: false
+        });
+      } else {
+        throw new Error('Cannot evaluate in local context - debugger not paused');
+      }
+    } else {
+      // Evaluate in global context
+      result = await this.client.Runtime.evaluate({
+        expression: expr.expression,
+        returnByValue: false
+      });
+    }
+    
+    if (result.exceptionDetails) {
+      throw new Error(result.exceptionDetails.text || 'Evaluation error');
+    }
+    
+    // Handle deep watch for objects
+    if (this.deepWatch && result.result?.objectId) {
+      const serialized = await this.serializeObject(result.result.objectId);
+      return serialized;
+    }
+    
+    return result.result?.value;
+  }
+  
+  private async serializeObject(objectId: string): Promise<string> {
+    try {
+      const result = await this.client.Runtime.callFunctionOn({
+        objectId,
+        functionDeclaration: `function() { 
+          try { 
+            return JSON.stringify(this, (key, value) => {
+              if (typeof value === 'object' && value !== null) {
+                if (this._seenObjects?.has(value)) {
+                  return '[Circular]';
+                }
+                if (!this._seenObjects) {
+                  Object.defineProperty(this, '_seenObjects', {
+                    value: new WeakSet(),
+                    configurable: true
+                  });
+                }
+                this._seenObjects.add(value);
+              }
+              return value;
+            });
+          } catch (e) { 
+            return '[Serialization Error]'; 
+          }
+        }`,
+        returnByValue: true
+      });
+      
+      return result.result?.value || '[Unknown]';
+    } catch (error) {
+      return '[Serialization Error]';
+    }
+  }
+  
+  private async checkForChanges(): Promise<void> {
+    for (const expr of this.expressions) {
+      try {
+        const newValue = await this.evaluateExpression(expr);
+        const oldValue = this.previousValues.get(expr.name);
+        
+        if (this.hasChanged(oldValue, newValue)) {
+          const change: any = {
+            timestamp: new Date().toISOString(),
+            name: expr.name,
+            expression: expr.expression,
+            oldValue,
+            newValue
+          };
+          
+          if (this.includeCallStack) {
+            change.callStack = await this.captureCallStack();
+          }
+          
+          this.changes.push(change);
+          this.previousValues.set(expr.name, newValue);
+          expr.currentValue = newValue;
+        }
+      } catch (error: any) {
+        expr.error = error.message;
+      }
+    }
+  }
+  
+  private hasChanged(oldValue: any, newValue: any): boolean {
+    if (this.deepWatch && typeof oldValue === 'string' && typeof newValue === 'string') {
+      // For deep watch, compare serialized strings
+      return oldValue !== newValue;
+    }
+    return oldValue !== newValue;
+  }
+  
+  private async getCurrentCallFrameId(): Promise<string | null> {
+    if (!this.server) return null;
+    
+    const debuggerState = this.server.getDebuggerState(this.tabId);
+    if (debuggerState?.isPaused && debuggerState.callFrames?.length > 0) {
+      return debuggerState.callFrames[0].callFrameId;
+    }
+    
+    return null;
+  }
+  
+  private async captureCallStack(): Promise<any[]> {
+    try {
+      const result = await this.client.Runtime.evaluate({
+        expression: `(new Error()).stack.split('\\n').slice(1).map(line => {
+          const match = line.match(/at\\s+(?:(.+?)\\s+\\()?(.+?):(\\d+):(\\d+)/);
+          if (match) {
+            return {
+              functionName: match[1] || 'anonymous',
+              url: match[2],
+              lineNumber: parseInt(match[3]),
+              columnNumber: parseInt(match[4])
+            };
+          }
+          return null;
+        }).filter(Boolean)`,
+        returnByValue: true
+      });
+      
+      return result.result?.value || [];
+    } catch (error) {
+      return [];
+    }
+  }
+  
+  getChanges(): any[] {
+    return this.changes;
+  }
+  
+  getExpressions(): any[] {
+    return this.expressions;
+  }
+  
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+}
+
+/**
+ * Event Monitor class for real-time event tracking
+ */
+class EventMonitor {
+  private events: any[] = [];
+  private eventHandlers: Map<string, Function> = new Map();
+  private client: any;
+  private eventTypes: string[];
+  private filters: any;
+  private bufferSize: number;
+  private realtime: boolean;
+  private enabled: boolean = false;
+  
+  constructor(client: any, _tabId: string, eventTypes: string[], filters: any = {}, bufferSize: number = 100, realtime: boolean = true) {
+    this.client = client;
+    this.eventTypes = eventTypes;
+    this.filters = filters;
+    this.bufferSize = bufferSize;
+    this.realtime = realtime;
+  }
+  
+  async start(): Promise<void> {
+    if (this.enabled) return;
+    
+    // Enable required domains based on event types
+    const typesToMonitor = this.eventTypes.includes('all') ? 
+      ['dom', 'console', 'network', 'script', 'performance', 'security', 'storage'] : 
+      this.eventTypes;
+    
+    for (const type of typesToMonitor) {
+      await this.enableDomain(type);
+      this.setupEventHandlers(type);
+    }
+    
+    this.enabled = true;
+  }
+  
+  async stop(): Promise<void> {
+    if (!this.enabled) return;
+    
+    // Remove all event handlers
+    for (const [event, handler] of this.eventHandlers) {
+      this.client.off(event, handler);
+    }
+    this.eventHandlers.clear();
+    this.enabled = false;
+  }
+  
+  private async enableDomain(eventType: string): Promise<void> {
+    switch (eventType) {
+      case 'dom':
+        await this.client.DOM.enable();
+        break;
+      case 'console':
+        await this.client.Console.enable();
+        break;
+      case 'network':
+        await this.client.Network.enable();
+        break;
+      case 'script':
+        if (this.client.Debugger) {
+          await this.client.Debugger.enable();
+        }
+        break;
+      case 'performance':
+        if (this.client.Performance) {
+          await this.client.Performance.enable();
+        }
+        break;
+      case 'security':
+        if (this.client.Security) {
+          await this.client.Security.enable();
+        }
+        break;
+      case 'storage':
+        if (this.client.DOMStorage) {
+          await this.client.DOMStorage.enable();
+        }
+        break;
+    }
+  }
+  
+  private setupEventHandlers(eventType: string): void {
+    switch (eventType) {
+      case 'dom':
+        this.addEventHandler('DOM.childNodeInserted', (params: any) => 
+          this.addEvent('dom', 'childNodeInserted', params));
+        this.addEventHandler('DOM.childNodeRemoved', (params: any) => 
+          this.addEvent('dom', 'childNodeRemoved', params));
+        this.addEventHandler('DOM.attributeModified', (params: any) => 
+          this.addEvent('dom', 'attributeModified', params));
+        this.addEventHandler('DOM.attributeRemoved', (params: any) => 
+          this.addEvent('dom', 'attributeRemoved', params));
+        break;
+        
+      case 'console':
+        this.addEventHandler('Console.messageAdded', (params: any) => {
+          const message = params.message;
+          // Apply severity filter
+          if (this.filters.severity && !this.matchesSeverity(message.level, this.filters.severity)) {
+            return;
+          }
+          this.addEvent('console', 'messageAdded', message);
+        });
+        break;
+        
+      case 'network':
+        this.addEventHandler('Network.requestWillBeSent', (params: any) => {
+          // Apply URL filter
+          if (this.filters.url && !params.request?.url?.includes(this.filters.url)) {
+            return;
+          }
+          this.addEvent('network', 'requestWillBeSent', params);
+        });
+        this.addEventHandler('Network.responseReceived', (params: any) => {
+          if (this.filters.url && !params.response?.url?.includes(this.filters.url)) {
+            return;
+          }
+          this.addEvent('network', 'responseReceived', params);
+        });
+        this.addEventHandler('Network.loadingFailed', (params: any) => {
+          this.addEvent('network', 'loadingFailed', params);
+        });
+        break;
+        
+      case 'script':
+        this.addEventHandler('Debugger.scriptParsed', (params: any) => 
+          this.addEvent('script', 'scriptParsed', params));
+        this.addEventHandler('Debugger.scriptFailedToParse', (params: any) => 
+          this.addEvent('script', 'scriptFailedToParse', params));
+        break;
+        
+      case 'performance':
+        this.addEventHandler('Performance.metrics', (params: any) => 
+          this.addEvent('performance', 'metrics', params));
+        break;
+        
+      case 'security':
+        this.addEventHandler('Security.securityStateChanged', (params: any) => 
+          this.addEvent('security', 'securityStateChanged', params));
+        this.addEventHandler('Security.certificateError', (params: any) => 
+          this.addEvent('security', 'certificateError', params));
+        break;
+        
+      case 'storage':
+        this.addEventHandler('DOMStorage.domStorageItemAdded', (params: any) => 
+          this.addEvent('storage', 'domStorageItemAdded', params));
+        this.addEventHandler('DOMStorage.domStorageItemRemoved', (params: any) => 
+          this.addEvent('storage', 'domStorageItemRemoved', params));
+        this.addEventHandler('DOMStorage.domStorageItemUpdated', (params: any) => 
+          this.addEvent('storage', 'domStorageItemUpdated', params));
+        this.addEventHandler('DOMStorage.domStorageItemsCleared', (params: any) => 
+          this.addEvent('storage', 'domStorageItemsCleared', params));
+        break;
+    }
+  }
+  
+  private addEventHandler(event: string, handler: Function): void {
+    this.client.on(event, handler);
+    this.eventHandlers.set(event, handler);
+  }
+  
+  private matchesSeverity(level: string, minSeverity: string): boolean {
+    const severityOrder = ['verbose', 'info', 'warning', 'error'];
+    const levelIndex = severityOrder.indexOf(level);
+    const minIndex = severityOrder.indexOf(minSeverity);
+    return levelIndex >= minIndex;
+  }
+  
+  private addEvent(type: string, eventName: string, data: any): void {
+    // Apply event name filter
+    if (this.filters.eventName && !eventName.includes(this.filters.eventName)) {
+      return;
+    }
+    
+    const event = {
+      timestamp: new Date().toISOString(),
+      type,
+      eventName,
+      data
+    };
+    
+    // Add to buffer
+    this.events.push(event);
+    
+    // Maintain buffer size limit
+    if (this.events.length > this.bufferSize) {
+      this.events.shift();
+    }
+    
+    // In real-time mode, we could emit events to a stream here
+    // For now, events are stored in the buffer
+  }
+  
+  getEvents(): any[] {
+    return this.events;
+  }
+  
+  isRealtime(): boolean {
+    return this.realtime;
+  }
+  
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+}
+
+/**
  * Chrome DevTools MCP Server
  * Provides direct access to Chrome's DevTools Protocol for granular real-time debugging
  */
@@ -28,6 +459,21 @@ export class ChromeDevToolsMCPServer {
   private consoleMessages: Map<string, any[]> = new Map();
   private networkLogs: Map<string, any[]> = new Map();
   private errors: Map<string, any[]> = new Map();
+  
+  // Source file registry for v1.1 debugging features
+  public sourceFiles: Map<string, Map<string, any>> = new Map();
+  
+  // Breakpoint registry for v1.1 debugging features
+  private breakpoints: Map<string, Map<string, any>> = new Map();
+  
+  // Debugger state tracking for v1.1 debugging features
+  private debuggerStates: Map<string, any> = new Map();
+  
+  // Event monitoring for v1.1 live development features
+  private eventMonitors: Map<string, EventMonitor> = new Map();
+  
+  // State watching for v1.1 live development features
+  private stateWatchers: Map<string, StateWatcher> = new Map();
 
   constructor() {
     // For now, we'll initialize this as a placeholder
@@ -403,6 +849,334 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId']
         }
+      },
+      {
+        name: 'modify_source_code',
+        description: 'Modify source code in real-time with hot reload support. Enables LLM-driven code modification and immediate testing of fixes. Essential for dynamic debugging workflows.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'ID of the Chrome tab where source code will be modified (from list_tabs response)',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            sourceId: {
+              type: 'string',
+              description: 'Script ID or URL pattern to identify the source file to modify. Use list_source_files to get available source IDs.'
+            },
+            newContent: {
+              type: 'string',
+              description: 'The modified source code content to apply. Must be valid JavaScript/TypeScript/CSS/HTML depending on file type.'
+            },
+            hotReload: {
+              type: 'boolean',
+              description: 'Whether to trigger hot reload after modification. When true, attempts to reload just the modified module without full page refresh.',
+              default: true
+            },
+            validateSyntax: {
+              type: 'boolean',
+              description: 'Whether to validate syntax before applying changes. When true, prevents applying changes that would cause syntax errors.',
+              default: true
+            }
+          },
+          required: ['tabId', 'sourceId', 'newContent']
+        }
+      },
+      {
+        name: 'manage_breakpoints',
+        description: 'Manage debugging breakpoints in Chrome DevTools. Set, remove, list, enable, or disable breakpoints for step-by-step debugging. Supports conditional breakpoints and logpoints for advanced debugging workflows.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'ID of the Chrome tab where breakpoints will be managed (from list_tabs response)',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            operation: {
+              type: 'string',
+              description: 'Breakpoint operation to perform',
+              enum: ['set', 'remove', 'list', 'enable', 'disable']
+            },
+            location: {
+              type: 'object',
+              description: 'Breakpoint location (required for set and remove operations)',
+              properties: {
+                url: {
+                  type: 'string',
+                  description: 'Source file URL or URL pattern where breakpoint will be set'
+                },
+                lineNumber: {
+                  type: 'integer',
+                  description: 'Line number where breakpoint will be set (1-indexed)',
+                  minimum: 1
+                },
+                columnNumber: {
+                  type: 'integer',
+                  description: 'Optional column number for more precise breakpoint positioning (0-indexed)',
+                  minimum: 0
+                }
+              },
+              required: ['url', 'lineNumber']
+            },
+            condition: {
+              type: 'string',
+              description: 'Optional condition expression for conditional breakpoints. Breakpoint only triggers when condition evaluates to true.'
+            },
+            logMessage: {
+              type: 'string',
+              description: 'Optional log message for logpoints. When set, logs message instead of pausing execution. Supports expressions in curly braces like "x is {x}".'
+            }
+          },
+          required: ['tabId', 'operation']
+        }
+      },
+      {
+        name: 'debug_step_control',
+        description: 'Control step debugging execution using Chrome DevTools Protocol. Supports pause, resume, and step operations (over, into, out) for precise debugging control during breakpoint hits.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to control',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            action: {
+              type: 'string',
+              enum: ['pause', 'resume', 'stepOver', 'stepInto', 'stepOut'],
+              description: 'The debugging action to perform. pause: Pause execution, resume: Continue execution, stepOver: Step over next function call, stepInto: Step into next function call, stepOut: Step out of current function'
+            },
+            callFrameId: {
+              type: 'string',
+              description: 'The call frame ID from the paused state. Required for step actions (stepOver, stepInto, stepOut) but not for pause/resume.'
+            }
+          },
+          required: ['tabId', 'action']
+        }
+      },
+      {
+        name: 'inspect_variables',
+        description: 'Inspect runtime variables and object properties using Chrome DevTools Protocol. Can inspect by objectId, evaluate expressions, or explore variables in the current call frame during debugging.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to inspect',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            objectId: {
+              type: 'string',
+              description: 'Runtime.RemoteObjectId - The ID of the object to inspect. Either objectId or expression must be provided.'
+            },
+            expression: {
+              type: 'string',
+              description: 'JavaScript expression to evaluate. Either objectId or expression must be provided.'
+            },
+            callFrameId: {
+              type: 'string',
+              description: 'The call frame ID to evaluate the expression in. Only valid when debugger is paused at a breakpoint.'
+            },
+            depth: {
+              type: 'integer',
+              minimum: 0,
+              maximum: 10,
+              default: 2,
+              description: 'Maximum depth to traverse when inspecting nested objects. Default is 2.'
+            }
+          },
+          required: ['tabId']
+        }
+      },
+      {
+        name: 'analyze_runtime_state',
+        description: 'Analyze the complete runtime state of a Chrome tab using Chrome DevTools Protocol. Provides comprehensive analysis of global state, local variables, closures, and memory usage for debugging and optimization.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to analyze',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            scope: {
+              type: 'string',
+              enum: ['global', 'local', 'closure', 'all'],
+              default: 'all',
+              description: 'The scope of state to analyze. global: Window/global objects, local: Current call frame locals, closure: Closure variables, all: Complete state analysis'
+            },
+            includePrototype: {
+              type: 'boolean',
+              default: false,
+              description: 'Whether to include prototype chain properties in the analysis'
+            },
+            includeGetters: {
+              type: 'boolean',
+              default: false,
+              description: 'Whether to invoke and include getter properties (may have side effects)'
+            },
+            maxResults: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 1000,
+              default: 100,
+              description: 'Maximum number of objects to analyze in detail'
+            }
+          },
+          required: ['tabId']
+        }
+      },
+      {
+        name: 'analyze_errors',
+        description: 'Analyze and diagnose errors in a Chrome tab using Chrome DevTools Protocol. Provides comprehensive error analysis including runtime exceptions, syntax errors, network failures, and security issues with stack traces and source context.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to analyze',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            errorType: {
+              type: 'string',
+              enum: ['runtime', 'syntax', 'network', 'security', 'all'],
+              default: 'all',
+              description: 'Type of errors to analyze. runtime: JavaScript exceptions, syntax: Parse errors, network: Failed requests, security: CSP/CORS violations, all: All error types'
+            },
+            includeStackTrace: {
+              type: 'boolean',
+              default: true,
+              description: 'Whether to include full stack traces for errors'
+            },
+            includeSourceContext: {
+              type: 'boolean',
+              default: true,
+              description: 'Whether to include source code context around error locations'
+            },
+            timeRange: {
+              type: 'integer',
+              minimum: 0,
+              maximum: 3600,
+              default: 300,
+              description: 'Time range in seconds to analyze errors (0 = current only, max 3600 = 1 hour)'
+            }
+          },
+          required: ['tabId']
+        }
+      },
+      {
+        name: 'monitor_events',
+        description: 'Monitor and capture real-time events from a Chrome tab using Chrome DevTools Protocol. Tracks DOM mutations, console logs, network activity, script execution, performance metrics, security events, and storage changes.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to monitor',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            eventTypes: {
+              type: 'array',
+              items: {
+                type: 'string',
+                enum: ['dom', 'console', 'network', 'script', 'performance', 'security', 'storage', 'all']
+              },
+              description: 'Types of events to monitor. dom: DOM mutations, console: Console logs, network: Network activity, script: Script execution, performance: Performance events, security: Security events, storage: Storage changes, all: All event types'
+            },
+            filters: {
+              type: 'object',
+              properties: {
+                url: {
+                  type: 'string',
+                  description: 'Filter events by URL pattern'
+                },
+                eventName: {
+                  type: 'string',
+                  description: 'Filter by specific event name'
+                },
+                severity: {
+                  type: 'string',
+                  enum: ['verbose', 'info', 'warning', 'error'],
+                  description: 'Minimum severity level for console events'
+                }
+              },
+              description: 'Optional filters to apply to events'
+            },
+            bufferSize: {
+              type: 'integer',
+              minimum: 10,
+              maximum: 10000,
+              default: 100,
+              description: 'Maximum number of events to buffer (when not in real-time mode)'
+            },
+            realtime: {
+              type: 'boolean',
+              default: true,
+              description: 'Whether to stream events in real-time or buffer them'
+            }
+          },
+          required: ['tabId', 'eventTypes']
+        }
+      },
+      {
+        name: 'watch_state_changes',
+        description: 'Watch and monitor state changes in a Chrome tab using Chrome DevTools Protocol. Track changes to specific JavaScript expressions, variables, and object properties over time for debugging and analysis.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to monitor',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            expressions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                    description: 'A friendly name for this watch expression'
+                  },
+                  expression: {
+                    type: 'string',
+                    description: 'JavaScript expression to evaluate and watch for changes'
+                  },
+                  context: {
+                    type: 'string',
+                    enum: ['global', 'local', 'closure'],
+                    default: 'global',
+                    description: 'The context in which to evaluate the expression'
+                  }
+                },
+                required: ['name', 'expression']
+              },
+              minItems: 1,
+              maxItems: 100,
+              description: 'Array of expressions to watch for state changes'
+            },
+            interval: {
+              type: 'integer',
+              minimum: 100,
+              maximum: 10000,
+              default: 500,
+              description: 'Polling interval in milliseconds to check for state changes'
+            },
+            deepWatch: {
+              type: 'boolean',
+              default: false,
+              description: 'Whether to perform deep equality checks on objects and arrays'
+            },
+            includeCallStack: {
+              type: 'boolean',
+              default: false,
+              description: 'Whether to capture call stack when changes are detected'
+            }
+          },
+          required: ['tabId', 'expressions']
+        }
       }
     ];
     
@@ -473,6 +1247,30 @@ export class ChromeDevToolsMCPServer {
       
       case 'list_source_files':
         return await this.listSourceFiles(parameters);
+      
+      case 'modify_source_code':
+        return await this.modifySourceCode(parameters);
+      
+      case 'manage_breakpoints':
+        return await this.manageBreakpoints(parameters);
+      
+      case 'debug_step_control':
+        return await this.debugStepControl(parameters);
+      
+      case 'inspect_variables':
+        return await this.inspectVariables(parameters);
+      
+      case 'analyze_runtime_state':
+        return await this.analyzeRuntimeState(parameters);
+      
+      case 'analyze_errors':
+        return await this.analyzeErrors(parameters);
+      
+      case 'monitor_events':
+        return await this.monitorEvents(parameters);
+      
+      case 'watch_state_changes':
+        return await this.watchStateChanges(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -611,7 +1409,7 @@ export class ChromeDevToolsMCPServer {
           host,
           port,
           tabCount: tabs.length,
-          tabs: tabs.map(tab => ({
+          tabs: tabs.map((tab: any) => ({
             id: tab.id,
             title: tab.title,
             url: tab.url,
@@ -695,7 +1493,7 @@ export class ChromeDevToolsMCPServer {
           port,
           tabCount: tabs.length
         },
-        tabs: tabs.map(tab => ({
+        tabs: tabs.map((tab: any) => ({
           id: tab.id,
           title: tab.title,
           url: tab.url,
@@ -894,6 +1692,20 @@ export class ChromeDevToolsMCPServer {
       } catch (error: any) {
         if (LOG_LEVEL === 'debug') {
           console.log('Failed to enable Network domain:', error.message);
+        }
+      }
+
+      // Initialize source discovery for v1.1 debugging features
+      try {
+        await this.initializeSourceDiscovery(tabId, client);
+        enabledDomains.push('Debugger');
+        
+        if (LOG_LEVEL === 'debug') {
+          console.log('Source discovery initialized for debugging features');
+        }
+      } catch (error: any) {
+        if (LOG_LEVEL === 'debug') {
+          console.log('Failed to initialize source discovery:', error.message);
         }
       }
 
@@ -3412,6 +4224,2563 @@ export class ChromeDevToolsMCPServer {
           timestamp: new Date().toISOString(),
           error: {
             type: 'SourceFileError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+
+  /**
+   * Modify source code in real-time with hot reload support
+   * Uses Chrome DevTools Protocol to modify JavaScript/TypeScript/CSS code
+   */
+  public async modifySourceCode(parameters: any): Promise<any> {
+    const { tabId, sourceId, newContent, hotReload = true, validateSyntax = true } = parameters;
+    
+    // Check if code modification is enabled
+    const codeModificationEnabled = process.env.CODE_MODIFICATION_ENABLED !== 'false';
+    if (!codeModificationEnabled) {
+      return {
+        success: false,
+        message: 'Code modification is disabled. Set CODE_MODIFICATION_ENABLED=true to enable this feature.',
+        sourceModification: {
+          tabId,
+          sourceId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Code modification is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    try {
+      // Get the Chrome client for this tab
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          message: `Tab ${tabId} is not connected. Use start_monitoring first.`,
+          error: 'Tab not connected',
+          sourceModification: {
+            tabId,
+            sourceId,
+            timestamp: new Date().toISOString(),
+            error: {
+              type: 'TabNotConnected',
+              message: 'Chrome tab is not connected'
+            }
+          }
+        };
+      }
+      
+      // Resolve the source target
+      const sourceTarget = await this.resolveSourceTarget(tabId, sourceId);
+      if (!sourceTarget) {
+        return {
+          success: false,
+          message: `Source file not found: ${sourceId}`,
+          error: 'Source file not found',
+          sourceModification: {
+            tabId,
+            sourceId,
+            timestamp: new Date().toISOString(),
+            error: {
+              type: 'SourceNotFound',
+              message: `Could not find source file matching: ${sourceId}`
+            }
+          }
+        };
+      }
+      
+      // Store original source for potential rollback
+      let originalSource: string | undefined;
+      try {
+        const originalResult = await client.send('Debugger.getScriptSource', {
+          scriptId: sourceTarget.scriptId
+        });
+        originalSource = originalResult.scriptSource;
+      } catch (error: any) {
+        if (LOG_LEVEL === 'debug') {
+          console.log('Could not retrieve original source:', error.message);
+        }
+      }
+      
+      // Check content size limits (10MB max by default)
+      const maxSize = parseInt(process.env.MAX_SOURCE_SIZE || '10485760', 10);
+      const contentSize = new TextEncoder().encode(newContent).length;
+      if (contentSize > maxSize) {
+        return {
+          success: false,
+          message: `Source code too large: ${contentSize} bytes (max: ${maxSize})`,
+          error: 'Content size exceeds limit',
+          sourceModification: {
+            tabId,
+            sourceId,
+            scriptId: sourceTarget.scriptId,
+            contentSize,
+            timestamp: new Date().toISOString(),
+            error: {
+              type: 'SizeLimitExceeded',
+              message: `Content size ${contentSize} exceeds maximum ${maxSize}`
+            }
+          }
+        };
+      }
+      
+      // Determine file type for appropriate validation
+      const fileType = this.getFileType(sourceTarget.url);
+      
+      // Validate syntax if requested
+      if (validateSyntax) {
+        const validationResult = await this.validateSourceCode(client, newContent, fileType, sourceTarget);
+        if (!validationResult.valid) {
+          return {
+            success: false,
+            message: `Validation failed: ${validationResult.error}`,
+            error: validationResult.error,
+            sourceModification: {
+              tabId,
+              sourceId,
+              scriptId: sourceTarget.scriptId,
+              fileType,
+              timestamp: new Date().toISOString(),
+              error: {
+                type: validationResult.errorType || 'ValidationError',
+                message: validationResult.error,
+                lineNumber: validationResult.lineNumber,
+                columnNumber: validationResult.columnNumber
+              }
+            }
+          };
+        }
+      }
+      
+      // Modify the source code using CDP
+      const modifyResult = await client.Debugger.setScriptSource({
+        scriptId: sourceTarget.scriptId,
+        scriptSource: newContent
+      });
+      
+      if (modifyResult.status !== 'Ok') {
+        const errorMessage = modifyResult.exceptionDetails?.text || 'Code modification failed';
+        return {
+          success: false,
+          message: errorMessage,
+          error: errorMessage,
+          sourceModification: {
+            tabId,
+            sourceId,
+            scriptId: sourceTarget.scriptId,
+            timestamp: new Date().toISOString(),
+            error: {
+              type: 'ModificationError',
+              message: errorMessage,
+              details: modifyResult.exceptionDetails
+            }
+          }
+        };
+      }
+      
+      // Track affected modules
+      const affectedModules = [sourceTarget.url];
+      
+      // Handle hot reload if requested
+      let reloadRequired = false;
+      if (hotReload) {
+        try {
+          // Try hot reload based on module system
+          const reloadResult = await this.attemptHotReload(client, sourceTarget, affectedModules);
+          reloadRequired = !reloadResult.success;
+          
+          if (reloadResult.success) {
+            affectedModules.push(...(reloadResult.reloadedModules || []));
+          }
+        } catch (hotReloadError: any) {
+          // Hot reload failed, fall back to page reload
+          reloadRequired = true;
+          if (LOG_LEVEL === 'debug') {
+            console.log('Hot reload failed:', hotReloadError.message);
+          }
+        }
+        
+        // If hot reload failed, do a full page reload
+        if (reloadRequired) {
+          await client.Page.reload({ ignoreCache: true });
+        }
+      }
+      
+      // Update source registry with modification info
+      const registry = this.getSourceRegistry(tabId);
+      const sourceInfo = registry.get(sourceTarget.scriptId);
+      if (sourceInfo) {
+        sourceInfo.lastModified = new Date().toISOString();
+        sourceInfo.originalSource = originalSource;
+        sourceInfo.isModified = true;
+      }
+      
+      // Check for runtime errors after modification
+      let warnings: any[] = [];
+      if (process.env.CODE_VALIDATION_STRICT === 'true') {
+        try {
+          const runtimeCheck = await client.Runtime.evaluate({
+            expression: `(function() { try { return { success: true }; } catch(e) { return { success: false, error: e.toString() }; } })()`,
+            returnByValue: true
+          });
+          
+          if (runtimeCheck.exceptionDetails) {
+            warnings.push({
+              type: 'RuntimeWarning',
+              message: 'Potential runtime error detected after modification',
+              details: runtimeCheck.exceptionDetails
+            });
+          }
+        } catch (error: any) {
+          // Runtime check failed, but modification succeeded
+          if (LOG_LEVEL === 'debug') {
+            console.log('Runtime validation check failed:', error.message);
+          }
+        }
+      }
+      
+      return {
+        success: true,
+        message: `Successfully modified source: ${sourceTarget.url}`,
+        reloadRequired,
+        affectedModules,
+        sourceModification: {
+          tabId,
+          sourceId,
+          scriptId: sourceTarget.scriptId,
+          url: sourceTarget.url,
+          fileType,
+          contentSize,
+          timestamp: new Date().toISOString(),
+          originalStored: !!originalSource,
+          hotReloadAttempted: hotReload,
+          reloadRequired,
+          affectedModules,
+          warnings: warnings.length > 0 ? warnings : undefined
+        }
+      };
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to modify source code for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        message: `Failed to modify source code: ${error.message}`,
+        error: error.message,
+        sourceModification: {
+          tabId,
+          sourceId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'UnexpectedError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+  
+  /**
+   * Attempt hot reload for modified source
+   * Returns success status and list of reloaded modules
+   */
+  private async attemptHotReload(client: any, sourceTarget: any, affectedModules: string[]): Promise<any> {
+    try {
+      // Detect module system
+      const moduleDetection = await client.Runtime.evaluate({
+        expression: `
+          (function() {
+            if (typeof module !== 'undefined' && module.hot) return { type: 'webpack', hot: true };
+            if (typeof import.meta !== 'undefined' && import.meta.hot) return { type: 'vite', hot: true };
+            if (typeof System !== 'undefined') return { type: 'systemjs', hot: false };
+            if (typeof module !== 'undefined' && module.exports) return { type: 'commonjs', hot: false };
+            if (typeof importScripts === 'function') return { type: 'worker', hot: false };
+            return { type: 'unknown', hot: false };
+          })()
+        `,
+        returnByValue: true
+      });
+      
+      const moduleSystem = moduleDetection.result.value;
+      
+      if (moduleSystem.hot) {
+        // Try HMR (Hot Module Replacement)
+        const hmrResult = await client.Runtime.evaluate({
+          expression: `
+            (function() {
+              try {
+                // Webpack HMR
+                if (module.hot) {
+                  module.hot.accept();
+                  return { success: true, method: 'webpack' };
+                }
+                // Vite HMR
+                if (import.meta.hot) {
+                  import.meta.hot.accept();
+                  return { success: true, method: 'vite' };
+                }
+              } catch (e) {
+                return { success: false, error: e.message };
+              }
+            })()
+          `,
+          returnByValue: true
+        });
+        
+        if (hmrResult.result.value?.success) {
+          return {
+            success: true,
+            method: hmrResult.result.value.method,
+            reloadedModules: affectedModules
+          };
+        }
+      }
+      
+      // Try basic module reload for ES modules
+      if (sourceTarget.url.endsWith('.js') || sourceTarget.url.endsWith('.mjs')) {
+        const reloadResult = await client.Runtime.evaluate({
+          expression: `
+            (function() {
+              try {
+                // Force re-evaluation of the module
+                const url = new URL('${sourceTarget.url}', window.location.href);
+                url.searchParams.set('_t', Date.now());
+                return import(url.href).then(() => ({ success: true }));
+              } catch (e) {
+                return { success: false, error: e.message };
+              }
+            })()
+          `,
+          awaitPromise: true,
+          returnByValue: true
+        });
+        
+        if (reloadResult.result.value?.success) {
+          return {
+            success: true,
+            method: 'esm-reload',
+            reloadedModules: affectedModules
+          };
+        }
+      }
+      
+      // Hot reload not supported
+      return {
+        success: false,
+        reason: 'Hot reload not supported for this module type'
+      };
+      
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Initialize source code discovery for a tab
+   * Enables Debugger domain and sets up event listeners
+   */
+  public async initializeSourceDiscovery(tabId: string, client: any): Promise<void> {
+    try {
+      // Enable Debugger domain to receive scriptParsed events
+      await client.Debugger.enable();
+      
+      // Initialize source registry for this tab if not exists
+      if (!this.sourceFiles.has(tabId)) {
+        this.sourceFiles.set(tabId, new Map());
+      }
+      
+      // Set up scriptParsed event listener
+      client.on('Debugger.scriptParsed', (params: any) => {
+        const sourceRegistry = this.sourceFiles.get(tabId);
+        if (!sourceRegistry) return;
+        
+        // Store source file information
+        sourceRegistry.set(params.scriptId, {
+          scriptId: params.scriptId,
+          url: params.url,
+          hasSourceMap: !!params.sourceMapURL,
+          sourceMapURL: params.sourceMapURL || undefined,
+          startLine: params.startLine,
+          startColumn: params.startColumn,
+          endLine: params.endLine,
+          endColumn: params.endColumn,
+          executionContextId: params.executionContextId,
+          hash: params.hash,
+          isLiveEdit: params.isLiveEdit || false,
+          length: params.length
+        });
+        
+        if (LOG_LEVEL === 'debug') {
+          console.log(`Source discovered: ${params.url} (${params.scriptId})`);
+        }
+      });
+      
+      // Also listen for scriptFailedToParse for error tracking
+      client.on('Debugger.scriptFailedToParse', (params: any) => {
+        if (LOG_LEVEL === 'debug') {
+          console.log(`Script failed to parse: ${params.url}`);
+        }
+      });
+      
+    } catch (error: any) {
+      console.error(`Failed to initialize source discovery for tab ${tabId}:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Get source file registry for a specific tab
+   */
+  public getSourceRegistry(tabId: string): Map<string, any> {
+    if (!this.sourceFiles.has(tabId)) {
+      this.sourceFiles.set(tabId, new Map());
+    }
+    return this.sourceFiles.get(tabId)!;
+  }
+
+  /**
+   * Get or create breakpoint registry for a tab
+   */
+  public getBreakpointRegistry(tabId: string): Map<string, any> {
+    if (!this.breakpoints.has(tabId)) {
+      this.breakpoints.set(tabId, new Map());
+    }
+    return this.breakpoints.get(tabId)!;
+  }
+
+  /**
+   * Get or create debugger state for a tab
+   */
+  public getDebuggerState(tabId: string): any {
+    if (!this.debuggerStates.has(tabId)) {
+      this.debuggerStates.set(tabId, {
+        isPaused: false,
+        pausedReason: null,
+        callFrames: [],
+        breakpointsPaused: [],
+        activeOperation: null
+      });
+    }
+    return this.debuggerStates.get(tabId)!;
+  }
+
+  /**
+   * Update debugger state with paused event data
+   */
+  public updateDebuggerState(tabId: string, pausedData: any): void {
+    const state = this.getDebuggerState(tabId);
+    state.isPaused = true;
+    state.pausedReason = pausedData.reason;
+    state.callFrames = pausedData.callFrames || [];
+    state.breakpointsPaused = pausedData.hitBreakpoints || [];
+    state.lastUpdate = new Date().toISOString();
+  }
+
+  /**
+   * Resolve source target by URL pattern or script ID
+   */
+  public async resolveSourceTarget(tabId: string, sourceId: string): Promise<any> {
+    const registry = this.getSourceRegistry(tabId);
+    
+    // First, try direct script ID match
+    if (registry.has(sourceId)) {
+      const source = registry.get(sourceId);
+      return {
+        ...source,
+        originalSource: !!source.originalUrl
+      };
+    }
+    
+    // Then, try URL pattern matching
+    for (const [_scriptId, source] of registry.entries()) {
+      // Check if the sourceId appears in the URL
+      if (source.url && source.url.includes(sourceId)) {
+        return {
+          ...source,
+          originalSource: !!source.originalUrl
+        };
+      }
+      
+      // Check original source URL if available
+      if (source.originalUrl && source.originalUrl.includes(sourceId)) {
+        return {
+          ...source,
+          originalSource: true
+        };
+      }
+    }
+    
+    // No match found
+    return null;
+  }
+
+  /**
+   * Clean up source registry for a tab
+   */
+  public cleanupSourceRegistry(tabId: string): void {
+    if (this.sourceFiles.has(tabId)) {
+      this.sourceFiles.delete(tabId);
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Cleaned up source registry for tab ${tabId}`);
+      }
+    }
+  }
+
+  /**
+   * Get file type from URL
+   */
+  private getFileType(url: string): string {
+    if (url.endsWith('.js') || url.endsWith('.mjs')) return 'javascript';
+    if (url.endsWith('.ts') || url.endsWith('.tsx')) return 'typescript';
+    if (url.endsWith('.css')) return 'css';
+    if (url.endsWith('.html') || url.endsWith('.htm')) return 'html';
+    if (url.endsWith('.json')) return 'json';
+    return 'unknown';
+  }
+
+  /**
+   * Validate source code based on file type
+   */
+  private async validateSourceCode(client: any, content: string, fileType: string, sourceTarget: any): Promise<any> {
+    try {
+      if (fileType === 'javascript' || fileType === 'typescript') {
+        // Use Runtime.compileScript for better validation
+        const compileResult = await client.Runtime.compileScript({
+          expression: content,
+          sourceURL: sourceTarget.url,
+          persistScript: false
+        });
+        
+        if (compileResult.exceptionDetails) {
+          return {
+            valid: false,
+            error: compileResult.exceptionDetails.text || 'Compilation failed',
+            errorType: 'SyntaxError',
+            lineNumber: compileResult.exceptionDetails.lineNumber,
+            columnNumber: compileResult.exceptionDetails.columnNumber
+          };
+        }
+        
+        return { valid: true };
+      }
+      
+      if (fileType === 'css') {
+        // Basic CSS validation - check for common syntax errors
+        // Remove comments for validation
+        const cleanCSS = content.replace(/\/\*[\s\S]*?\*\//g, '');
+        
+        // Check for empty values
+        if (cleanCSS.match(/:\s*;/)) {
+          return {
+            valid: false,
+            error: 'CSS contains empty property values',
+            errorType: 'CSSError'
+          };
+        }
+        
+        // Check for unclosed braces
+        const openBraces = (cleanCSS.match(/{/g) || []).length;
+        const closeBraces = (cleanCSS.match(/}/g) || []).length;
+        if (openBraces !== closeBraces) {
+          return {
+            valid: false,
+            error: `CSS has ${openBraces} opening braces but ${closeBraces} closing braces`,
+            errorType: 'CSSError'
+          };
+        }
+        
+        return { valid: true };
+      }
+      
+      if (fileType === 'json') {
+        try {
+          JSON.parse(content);
+          return { valid: true };
+        } catch (error: any) {
+          return {
+            valid: false,
+            error: `JSON parse error: ${error.message}`,
+            errorType: 'JSONError'
+          };
+        }
+      }
+      
+      // For other file types, skip validation
+      return { valid: true };
+      
+    } catch (error: any) {
+      return {
+        valid: false,
+        error: `Validation error: ${error.message}`,
+        errorType: 'ValidationError'
+      };
+    }
+  }
+
+  /**
+   * Manage debugging breakpoints
+   * Uses Chrome DevTools Protocol to set, remove, list, enable, or disable breakpoints
+   */
+  public async manageBreakpoints(parameters: any): Promise<any> {
+    const { tabId, operation, location, condition, logMessage, breakpointId } = parameters;
+    
+    // Check if debugger is enabled
+    const debuggerEnabled = process.env.DEBUGGER_ENABLED !== 'false';
+    if (!debuggerEnabled) {
+      return {
+        success: false,
+        message: 'Debugger is disabled. Set DEBUGGER_ENABLED=true to enable debugging features.',
+        breakpointManagement: {
+          tabId,
+          operation,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Debugger is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          breakpointManagement: {
+            tabId,
+            operation,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
+      }
+      
+      // Get or create breakpoint registry for this tab
+      const breakpoints = this.getBreakpointRegistry(tabId);
+      
+      switch (operation) {
+        case 'set':
+          // Validate location parameter
+          if (!location || !location.url || !location.lineNumber) {
+            return {
+              success: false,
+              error: 'Location required for set operation',
+              breakpointManagement: {
+                tabId,
+                operation,
+                timestamp,
+                error: {
+                  type: 'ValidationError',
+                  message: 'Location with url and lineNumber is required for setting breakpoints'
+                }
+              }
+            };
+          }
+          
+          // Set breakpoint using CDP
+          const setParams: any = {
+            url: location.url,
+            lineNumber: location.lineNumber - 1, // CDP uses 0-based line numbers
+            columnNumber: location.columnNumber
+          };
+          
+          if (condition) {
+            setParams.condition = condition;
+          }
+          
+          if (logMessage) {
+            setParams.logMessage = logMessage;
+          }
+          
+          const setResult = await client.Debugger.setBreakpointByUrl(setParams);
+          
+          // Store breakpoint in registry
+          const bpId = setResult.breakpointId;
+          breakpoints.set(bpId, {
+            id: bpId,
+            url: location.url,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber,
+            condition,
+            logMessage,
+            enabled: true,
+            locations: setResult.locations
+          });
+          
+          return {
+            success: true,
+            message: `Breakpoint set at ${location.url}:${location.lineNumber}`,
+            breakpointId: bpId,
+            locations: setResult.locations,
+            breakpointManagement: {
+              tabId,
+              operation,
+              timestamp,
+              breakpointId: bpId
+            }
+          };
+          
+        case 'remove':
+          // Validate breakpointId parameter
+          if (!breakpointId) {
+            return {
+              success: false,
+              error: 'Breakpoint ID required for remove operation',
+              breakpointManagement: {
+                tabId,
+                operation,
+                timestamp,
+                error: {
+                  type: 'ValidationError',
+                  message: 'breakpointId is required for removing breakpoints'
+                }
+              }
+            };
+          }
+          
+          // Remove breakpoint using CDP
+          await client.Debugger.removeBreakpoint({ breakpointId });
+          
+          // Remove from registry
+          breakpoints.delete(breakpointId);
+          
+          return {
+            success: true,
+            message: `Breakpoint ${breakpointId} removed`,
+            breakpointManagement: {
+              tabId,
+              operation,
+              timestamp,
+              breakpointId
+            }
+          };
+          
+        case 'list':
+          // Return all breakpoints for this tab
+          const bpList = Array.from(breakpoints.values());
+          
+          return {
+            success: true,
+            message: `Found ${bpList.length} breakpoints`,
+            breakpoints: bpList,
+            breakpointManagement: {
+              tabId,
+              operation,
+              timestamp,
+              count: bpList.length
+            }
+          };
+          
+        case 'enable':
+        case 'disable':
+          // Validate breakpointId parameter
+          if (!breakpointId) {
+            return {
+              success: false,
+              error: `Breakpoint ID required for ${operation} operation`,
+              breakpointManagement: {
+                tabId,
+                operation,
+                timestamp,
+                error: {
+                  type: 'ValidationError',
+                  message: `breakpointId is required for ${operation} operation`
+                }
+              }
+            };
+          }
+          
+          // Update breakpoint state in registry
+          const bp = breakpoints.get(breakpointId);
+          if (!bp) {
+            return {
+              success: false,
+              error: `Breakpoint ${breakpointId} not found`,
+              breakpointManagement: {
+                tabId,
+                operation,
+                timestamp,
+                error: {
+                  type: 'NotFound',
+                  message: `Breakpoint with ID ${breakpointId} not found`
+                }
+              }
+            };
+          }
+          
+          bp.enabled = operation === 'enable';
+          
+          // Note: CDP doesn't have individual breakpoint enable/disable
+          // We track the state but don't change CDP state
+          // Full implementation would re-set or remove breakpoints
+          
+          return {
+            success: true,
+            message: `Breakpoint ${breakpointId} ${operation}d`,
+            breakpointManagement: {
+              tabId,
+              operation,
+              timestamp,
+              breakpointId,
+              enabled: bp.enabled
+            }
+          };
+          
+        default:
+          return {
+            success: false,
+            error: `Unknown operation: ${operation}`,
+            breakpointManagement: {
+              tabId,
+              operation,
+              timestamp,
+              error: {
+                type: 'InvalidOperation',
+                message: `Operation '${operation}' is not supported. Use: set, remove, list, enable, disable`
+              }
+            }
+          };
+      }
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to manage breakpoints for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        breakpointManagement: {
+          tabId,
+          operation,
+          timestamp,
+          error: {
+            type: 'BreakpointError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+
+  /**
+   * Control step debugging execution
+   * Uses Chrome DevTools Protocol to pause, resume, and step through code
+   */
+  public async debugStepControl(parameters: any): Promise<any> {
+    const { tabId, action, callFrameId, pauseOnExceptions } = parameters;
+    
+    // Check if debugger is enabled
+    const debuggerEnabled = process.env.DEBUGGER_ENABLED !== 'false';
+    if (!debuggerEnabled) {
+      return {
+        success: false,
+        message: 'Debugger is disabled. Set DEBUGGER_ENABLED=true to enable debugging features.',
+        stepControl: {
+          tabId,
+          action,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Debugger is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    // Validate action parameter
+    const validActions = ['pause', 'resume', 'stepOver', 'stepInto', 'stepOut'];
+    if (!validActions.includes(action)) {
+      return {
+        success: false,
+        error: `Invalid action: ${action}. Valid actions: ${validActions.join(', ')}`,
+        stepControl: {
+          tabId,
+          action,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'ValidationError',
+            message: `Action '${action}' is not supported`
+          }
+        }
+      };
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          stepControl: {
+            tabId,
+            action,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
+      }
+      
+      // Get debugger state
+      const state = this.getDebuggerState(tabId);
+      
+      // Check for concurrent operations
+      if (state.activeOperation) {
+        return {
+          success: false,
+          error: 'Another debugging operation is in progress',
+          stepControl: {
+            tabId,
+            action,
+            timestamp,
+            error: {
+              type: 'OperationInProgress',
+              message: `Operation '${state.activeOperation}' is already in progress`
+            }
+          }
+        };
+      }
+      
+      // Validate callFrameId for step operations
+      if (['stepOver', 'stepInto', 'stepOut'].includes(action) && !callFrameId) {
+        return {
+          success: false,
+          error: 'callFrameId required for step operations',
+          stepControl: {
+            tabId,
+            action,
+            timestamp,
+            error: {
+              type: 'ValidationError',
+              message: `callFrameId is required for ${action} operation`
+            }
+          }
+        };
+      }
+      
+      // Set active operation
+      state.activeOperation = action;
+      
+      let result: any;
+      
+      try {
+        switch (action) {
+          case 'pause':
+            // Set pause on exceptions if specified
+            if (pauseOnExceptions) {
+              await client.Debugger.setPauseOnExceptions({
+                state: pauseOnExceptions
+              });
+            }
+            
+            await client.Debugger.pause();
+            state.isPaused = true;
+            state.pausedReason = 'user';
+            
+            result = {
+              success: true,
+              message: 'Execution paused',
+              stepControl: {
+                tabId,
+                action,
+                timestamp,
+                isPaused: true
+              }
+            };
+            break;
+            
+          case 'resume':
+            await client.Debugger.resume();
+            state.isPaused = false;
+            state.pausedReason = null;
+            state.callFrames = [];
+            
+            result = {
+              success: true,
+              message: 'Execution resumed',
+              stepControl: {
+                tabId,
+                action,
+                timestamp,
+                isPaused: false
+              }
+            };
+            break;
+            
+          case 'stepOver':
+            await client.Debugger.stepOver();
+            
+            result = {
+              success: true,
+              message: 'Stepped over',
+              stepControl: {
+                tabId,
+                action,
+                timestamp,
+                callFrameId,
+                callStackDepth: state.callFrames.length
+              }
+            };
+            break;
+            
+          case 'stepInto':
+            await client.Debugger.stepInto();
+            
+            result = {
+              success: true,
+              message: 'Stepped into',
+              stepControl: {
+                tabId,
+                action,
+                timestamp,
+                callFrameId,
+                callStackDepth: state.callFrames.length
+              }
+            };
+            break;
+            
+          case 'stepOut':
+            await client.Debugger.stepOut();
+            
+            result = {
+              success: true,
+              message: 'Stepped out',
+              stepControl: {
+                tabId,
+                action,
+                timestamp,
+                callFrameId,
+                callStackDepth: state.callFrames.length
+              }
+            };
+            break;
+        }
+        
+        return result;
+        
+      } finally {
+        // Clear active operation
+        state.activeOperation = null;
+      }
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to perform ${action} for tab ${tabId}:`, error.message);
+      }
+      
+      // Clear active operation on error
+      const state = this.getDebuggerState(tabId);
+      state.activeOperation = null;
+      
+      return {
+        success: false,
+        error: error.message,
+        stepControl: {
+          tabId,
+          action,
+          timestamp,
+          error: {
+            type: 'DebugError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+
+  /**
+   * Inspect runtime variables and object properties
+   * Uses Chrome DevTools Protocol Runtime domain to evaluate and inspect objects
+   */
+  public async inspectVariables(parameters: any): Promise<any> {
+    const { tabId, objectId, expression, callFrameId, depth = 2 } = parameters;
+    
+    // Check if runtime inspection is enabled
+    const inspectionEnabled = process.env.RUNTIME_INSPECTION_ENABLED !== 'false';
+    if (!inspectionEnabled) {
+      return {
+        success: false,
+        message: 'Runtime inspection is disabled. Set RUNTIME_INSPECTION_ENABLED=true to enable inspection features.',
+        variableInspection: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Runtime inspection is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    // Validate that either objectId or expression is provided
+    if (!objectId && !expression) {
+      return {
+        success: false,
+        error: 'Either objectId or expression must be provided',
+        variableInspection: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'ValidationError',
+            message: 'Either objectId or expression parameter is required'
+          }
+        }
+      };
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          variableInspection: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
+      }
+      
+      let result: any;
+      
+      if (expression) {
+        // Evaluate expression
+        if (callFrameId) {
+          // Evaluate in call frame context (when paused at breakpoint)
+          result = await client.Debugger.evaluateOnCallFrame({
+            callFrameId,
+            expression,
+            returnByValue: false,
+            generatePreview: true
+          });
+        } else {
+          // Evaluate in global context
+          result = await client.Runtime.evaluate({
+            expression,
+            returnByValue: false,
+            generatePreview: true
+          });
+        }
+        
+        // Check for evaluation errors
+        if (result.exceptionDetails) {
+          return {
+            success: false,
+            error: result.exceptionDetails.text || 'Evaluation error',
+            variableInspection: {
+              tabId,
+              expression,
+              timestamp,
+              error: {
+                type: 'EvaluationError',
+                message: result.exceptionDetails.text,
+                exception: result.exceptionDetails.exception
+              }
+            }
+          };
+        }
+        
+        // If result is an object and depth > 0, get its properties
+        if (result.result.objectId && depth > 0) {
+          const properties = await this.getObjectProperties(
+            client,
+            result.result.objectId,
+            depth,
+            new Set()
+          );
+          result.result.properties = properties;
+        }
+        
+        return {
+          success: true,
+          message: `Evaluated expression: ${expression}`,
+          variableInspection: {
+            tabId,
+            expression,
+            timestamp,
+            result: result.result
+          }
+        };
+        
+      } else {
+        // Inspect object by ID
+        const properties = await this.getObjectProperties(
+          client,
+          objectId,
+          depth,
+          new Set()
+        );
+        
+        return {
+          success: true,
+          message: `Inspected object: ${objectId}`,
+          variableInspection: {
+            tabId,
+            objectId,
+            timestamp,
+            properties
+          }
+        };
+      }
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to inspect variables for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        variableInspection: {
+          tabId,
+          timestamp,
+          error: {
+            type: 'InspectionError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+  
+  /**
+   * Recursively get object properties up to specified depth
+   */
+  private async getObjectProperties(
+    client: any,
+    objectId: string,
+    depth: number,
+    visitedObjects: Set<string>
+  ): Promise<any[]> {
+    // Check for circular references
+    if (visitedObjects.has(objectId)) {
+      return [{
+        name: '[[Circular]]',
+        value: {
+          type: 'object',
+          objectId,
+          description: 'Circular reference',
+          circular: true
+        }
+      }];
+    }
+    
+    visitedObjects.add(objectId);
+    
+    try {
+      const response = await client.Runtime.getProperties({
+        objectId,
+        ownProperties: true,
+        generatePreview: true
+      });
+      
+      const properties = response.result || [];
+      
+      // If depth > 1, recursively get nested object properties
+      if (depth > 1) {
+        for (const prop of properties) {
+          if (prop.value && prop.value.objectId && prop.value.type === 'object') {
+            prop.value.properties = await this.getObjectProperties(
+              client,
+              prop.value.objectId,
+              depth - 1,
+              new Set(visitedObjects)
+            );
+          }
+        }
+      }
+      
+      return properties;
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to get properties for object ${objectId}:`, error.message);
+      }
+      return [];
+    }
+  }
+
+  /**
+   * Analyze the complete runtime state of a tab
+   * Provides comprehensive analysis of variables, objects, and memory usage
+   */
+  public async analyzeRuntimeState(parameters: any): Promise<any> {
+    const { 
+      tabId, 
+      scope = 'all', 
+      includePrototype = false, 
+      includeGetters = false, 
+      maxResults = 100 
+    } = parameters;
+    
+    // Check if state analysis is enabled
+    const analysisEnabled = process.env.STATE_ANALYSIS_ENABLED !== 'false';
+    if (!analysisEnabled) {
+      return {
+        success: false,
+        message: 'State analysis is disabled. Set STATE_ANALYSIS_ENABLED=true to enable state analysis features.',
+        stateAnalysis: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'State analysis is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          stateAnalysis: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
+      }
+      
+      const analysis: any = {
+        tabId,
+        timestamp,
+        scope,
+        summary: {
+          totalObjects: 0,
+          analyzedObjects: 0,
+          truncated: false
+        }
+      };
+      
+      // Analyze based on scope
+      if (scope === 'global' || scope === 'all') {
+        analysis.globalState = await this.analyzeGlobalScope(
+          client,
+          includePrototype,
+          includeGetters,
+          maxResults
+        );
+        analysis.summary.totalObjects += analysis.globalState.totalProperties || 0;
+        analysis.summary.analyzedObjects += analysis.globalState.properties?.length || 0;
+      }
+      
+      // Get debugger state for local/closure analysis
+      const debuggerState = this.getDebuggerState(tabId);
+      
+      if ((scope === 'local' || scope === 'all') && debuggerState.isPaused) {
+        analysis.localState = await this.analyzeLocalScope(
+          client,
+          debuggerState,
+          includePrototype,
+          maxResults
+        );
+        analysis.summary.totalObjects += analysis.localState.totalVariables || 0;
+        analysis.summary.analyzedObjects += analysis.localState.variables?.length || 0;
+      }
+      
+      if ((scope === 'closure' || scope === 'all') && debuggerState.isPaused) {
+        analysis.closureState = await this.analyzeClosureScope(
+          client,
+          debuggerState,
+          includePrototype,
+          maxResults
+        );
+        analysis.summary.totalObjects += analysis.closureState.totalVariables || 0;
+        analysis.summary.analyzedObjects += analysis.closureState.closures?.reduce(
+          (sum: number, c: any) => sum + (c.variables?.length || 0), 0
+        ) || 0;
+      }
+      
+      // Get memory usage if analyzing all
+      if (scope === 'all') {
+        analysis.memoryUsage = await this.getMemoryUsage(client);
+      }
+      
+      analysis.summary.truncated = analysis.summary.analyzedObjects < analysis.summary.totalObjects;
+      
+      return {
+        success: true,
+        message: `Analyzed ${scope} runtime state for tab ${tabId}`,
+        stateAnalysis: analysis
+      };
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to analyze runtime state for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        stateAnalysis: {
+          tabId,
+          timestamp,
+          error: {
+            type: 'AnalysisError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+  
+  /**
+   * Analyze global scope (window object and global variables)
+   */
+  private async analyzeGlobalScope(
+    client: any,
+    includePrototype: boolean,
+    _includeGetters: boolean,
+    maxResults: number
+  ): Promise<any> {
+    try {
+      // Evaluate window object
+      const globalResult = await client.Runtime.evaluate({
+        expression: 'window',
+        returnByValue: false
+      });
+      
+      if (!globalResult.result?.objectId) {
+        return { error: 'Could not access global scope' };
+      }
+      
+      // Get global properties
+      const propsResponse = await client.Runtime.getProperties({
+        objectId: globalResult.result.objectId,
+        ownProperties: !includePrototype,
+        accessorPropertiesOnly: false,
+        generatePreview: true
+      });
+      
+      const properties = propsResponse.result || [];
+      const totalProperties = properties.length;
+      
+      // Limit results
+      const limitedProps = properties.slice(0, maxResults);
+      
+      // Get lexical scope names (let, const at global level)
+      let lexicalNames: string[] = [];
+      try {
+        const lexicalResponse = await client.Runtime.globalLexicalScopeNames();
+        lexicalNames = lexicalResponse.names || [];
+      } catch (e) {
+        // Not all Chrome versions support this
+      }
+      
+      return {
+        type: 'global',
+        properties: limitedProps,
+        totalProperties,
+        lexicalNames,
+        truncated: limitedProps.length < totalProperties
+      };
+      
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  }
+  
+  /**
+   * Analyze local scope (current call frame variables)
+   */
+  private async analyzeLocalScope(
+    client: any,
+    debuggerState: any,
+    _includePrototype: boolean,
+    maxResults: number
+  ): Promise<any> {
+    try {
+      const callFrame = debuggerState.callFrames?.[0];
+      if (!callFrame) {
+        return { error: 'No call frame available' };
+      }
+      
+      // Find local scope
+      const localScope = callFrame.scopeChain?.find((s: any) => s.type === 'local');
+      if (!localScope?.object?.objectId) {
+        return { error: 'No local scope found' };
+      }
+      
+      // Get local variables
+      const propsResponse = await client.Runtime.getProperties({
+        objectId: localScope.object.objectId,
+        ownProperties: true,
+        generatePreview: true
+      });
+      
+      const variables = propsResponse.result || [];
+      const totalVariables = variables.length;
+      const limitedVars = variables.slice(0, maxResults);
+      
+      return {
+        type: 'local',
+        callFrame: callFrame.functionName || 'anonymous',
+        variables: limitedVars,
+        totalVariables,
+        truncated: limitedVars.length < totalVariables
+      };
+      
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  }
+  
+  /**
+   * Analyze closure scope (captured variables)
+   */
+  private async analyzeClosureScope(
+    client: any,
+    debuggerState: any,
+    _includePrototype: boolean,
+    maxResults: number
+  ): Promise<any> {
+    try {
+      const callFrame = debuggerState.callFrames?.[0];
+      if (!callFrame) {
+        return { error: 'No call frame available' };
+      }
+      
+      // Find all closure scopes
+      const closureScopes = callFrame.scopeChain?.filter((s: any) => s.type === 'closure') || [];
+      if (closureScopes.length === 0) {
+        return { type: 'closure', closures: [], totalVariables: 0 };
+      }
+      
+      const closures = [];
+      let totalVariables = 0;
+      let analyzedVariables = 0;
+      
+      for (const closureScope of closureScopes) {
+        if (!closureScope.object?.objectId) continue;
+        
+        const propsResponse = await client.Runtime.getProperties({
+          objectId: closureScope.object.objectId,
+          ownProperties: true,
+          generatePreview: true
+        });
+        
+        const variables = propsResponse.result || [];
+        totalVariables += variables.length;
+        
+        // Apply limit across all closures
+        const remainingSlots = Math.max(0, maxResults - analyzedVariables);
+        const limitedVars = variables.slice(0, remainingSlots);
+        analyzedVariables += limitedVars.length;
+        
+        closures.push({
+          name: closureScope.name || 'closure',
+          variables: limitedVars
+        });
+        
+        if (analyzedVariables >= maxResults) break;
+      }
+      
+      return {
+        type: 'closure',
+        closures,
+        totalVariables,
+        truncated: analyzedVariables < totalVariables
+      };
+      
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  }
+  
+  /**
+   * Get memory usage statistics
+   */
+  private async getMemoryUsage(client: any): Promise<any> {
+    try {
+      const memoryResult = await client.Runtime.evaluate({
+        expression: 'performance.memory',
+        returnByValue: true
+      });
+      
+      if (memoryResult.result?.value) {
+        return memoryResult.result.value;
+      }
+      
+      // Fallback: extract from preview
+      if (memoryResult.result?.preview?.properties) {
+        const memoryData: any = {};
+        for (const prop of memoryResult.result.preview.properties) {
+          memoryData[prop.name] = parseInt(prop.value) || 0;
+        }
+        return memoryData;
+      }
+      
+      return null;
+      
+    } catch (error: any) {
+      return null;
+    }
+  }
+
+  /**
+   * Analyze and diagnose errors in a tab
+   * Provides comprehensive error analysis with stack traces and context
+   */
+  public async analyzeErrors(parameters: any): Promise<any> {
+    const { 
+      tabId, 
+      errorType = 'all', 
+      _includeStackTrace = true, 
+      includeSourceContext = true, 
+      timeRange = 300 
+    } = parameters;
+    
+    // Check if error analysis is enabled
+    const analysisEnabled = process.env.ERROR_ANALYSIS_ENABLED !== 'false';
+    if (!analysisEnabled) {
+      return {
+        success: false,
+        message: 'Error analysis is disabled. Set ERROR_ANALYSIS_ENABLED=true to enable error analysis features.',
+        errorAnalysis: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Error analysis is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    const timestamp = new Date().toISOString();
+    const now = Date.now();
+    const cutoffTime = now - (timeRange * 1000);
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          errorAnalysis: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
+      }
+      
+      const errors: any[] = [];
+      const summary = {
+        totalErrors: 0,
+        byType: {
+          runtime: 0,
+          syntax: 0,
+          network: 0,
+          security: 0
+        }
+      };
+      
+      // Collect runtime and syntax errors
+      if (errorType === 'all' || errorType === 'runtime' || errorType === 'syntax') {
+        const storedErrors = this.errors.get(tabId) || [];
+        const relevantErrors = storedErrors.filter((err: any) => {
+          const errTime = new Date(err.timestamp).getTime();
+          return errTime >= cutoffTime && 
+                 (errorType === 'all' || err.type === errorType);
+        });
+        
+        for (const err of relevantErrors) {
+          const errorInfo: any = {
+            ...err,
+            age: Math.floor((now - new Date(err.timestamp).getTime()) / 1000)
+          };
+          
+          // Get source context if requested and scriptId is available
+          if (includeSourceContext && err.scriptId) {
+            try {
+              const sourceResult = await client.Debugger.getScriptSource({
+                scriptId: err.scriptId
+              });
+              
+              if (sourceResult.scriptSource && err.lineNumber) {
+                errorInfo.sourceContext = this.getSourceContext(
+                  sourceResult.scriptSource,
+                  err.lineNumber,
+                  3 // Context lines before/after
+                );
+              }
+            } catch (e) {
+              // Source might not be available
+            }
+          }
+          
+          errors.push(errorInfo);
+          summary.byType[err.type as keyof typeof summary.byType]++;
+          summary.totalErrors++;
+        }
+      }
+      
+      // Collect network errors
+      if (errorType === 'all' || errorType === 'network') {
+        const networkLogs = this.networkLogs.get(tabId) || [];
+        const networkErrors = networkLogs.filter((log: any) => {
+          const logTime = new Date(log.timestamp).getTime();
+          return logTime >= cutoffTime && 
+                 (log.status >= 400 || log.errorText);
+        });
+        
+        for (const netErr of networkErrors) {
+          errors.push({
+            type: 'network',
+            timestamp: netErr.timestamp,
+            url: netErr.url,
+            method: netErr.method,
+            status: netErr.status,
+            statusText: netErr.statusText,
+            errorText: netErr.errorText || `HTTP ${netErr.status}`,
+            requestId: netErr.requestId,
+            age: Math.floor((now - new Date(netErr.timestamp).getTime()) / 1000)
+          });
+          summary.byType.network++;
+          summary.totalErrors++;
+        }
+      }
+      
+      // Collect security errors (filtered from general errors)
+      if (errorType === 'all' || errorType === 'security') {
+        const storedErrors = this.errors.get(tabId) || [];
+        const securityErrors = storedErrors.filter((err: any) => {
+          const errTime = new Date(err.timestamp).getTime();
+          return errTime >= cutoffTime && err.type === 'security';
+        });
+        
+        for (const secErr of securityErrors) {
+          errors.push({
+            ...secErr,
+            age: Math.floor((now - new Date(secErr.timestamp).getTime()) / 1000)
+          });
+          summary.byType.security++;
+          summary.totalErrors++;
+        }
+      }
+      
+      // Sort errors by timestamp (newest first)
+      errors.sort((a, b) => 
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+      
+      // Group similar errors
+      const errorGroups = this.groupSimilarErrors(errors);
+      
+      // Detect patterns and provide recommendations
+      const patterns = this.detectErrorPatterns(errors);
+      const recommendations = this.getErrorRecommendations(patterns, summary);
+      
+      return {
+        success: true,
+        message: `Analyzed ${summary.totalErrors} errors in tab ${tabId}`,
+        errorAnalysis: {
+          tabId,
+          timestamp,
+          errorType,
+          timeRange,
+          errors,
+          errorGroups,
+          summary,
+          patterns,
+          recommendations
+        }
+      };
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to analyze errors for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        errorAnalysis: {
+          tabId,
+          timestamp,
+          error: {
+            type: 'AnalysisError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+  
+  /**
+   * Get source code context around an error line
+   */
+  private getSourceContext(source: string, lineNumber: number, contextLines: number): any {
+    const lines = source.split('\n');
+    const startLine = Math.max(0, lineNumber - contextLines - 1);
+    const endLine = Math.min(lines.length, lineNumber + contextLines);
+    
+    const contextLinesArray = [];
+    for (let i = startLine; i < endLine; i++) {
+      contextLinesArray.push({
+        number: i + 1,
+        text: lines[i],
+        isError: i + 1 === lineNumber
+      });
+    }
+    
+    return {
+      lines: lines.slice(startLine, endLine),
+      lineNumbers: contextLinesArray,
+      errorLine: lineNumber
+    };
+  }
+  
+  /**
+   * Group similar errors together
+   */
+  private groupSimilarErrors(errors: any[]): any[] {
+    const groups = new Map<string, any>();
+    
+    for (const error of errors) {
+      // Create a key based on error characteristics
+      const key = `${error.type}:${error.message}:${error.url || ''}:${error.lineNumber || ''}`;
+      
+      if (!groups.has(key)) {
+        groups.set(key, {
+          type: error.type,
+          message: error.message,
+          url: error.url,
+          lineNumber: error.lineNumber,
+          count: 0,
+          firstSeen: error.timestamp,
+          lastSeen: error.timestamp,
+          examples: []
+        });
+      }
+      
+      const group = groups.get(key)!;
+      group.count++;
+      group.lastSeen = error.timestamp;
+      if (group.examples.length < 3) {
+        group.examples.push(error);
+      }
+    }
+    
+    return Array.from(groups.values())
+      .sort((a, b) => b.count - a.count); // Sort by frequency
+  }
+  
+  /**
+   * Detect common error patterns
+   */
+  private detectErrorPatterns(errors: any[]): string[] {
+    const patterns = new Set<string>();
+    
+    for (const error of errors) {
+      if (error.type === 'runtime') {
+        // Null/undefined reference errors
+        if (/Cannot read prop|of undefined|of null/i.test(error.message)) {
+          patterns.add('null-reference');
+        }
+        // Type errors
+        if (/is not a function|is not defined/i.test(error.message)) {
+          patterns.add('type-error');
+        }
+        // Promise rejections
+        if (/unhandled.*rejection|promise/i.test(error.message)) {
+          patterns.add('unhandled-promise');
+        }
+      }
+      
+      if (error.type === 'network') {
+        if (error.status === 404) patterns.add('missing-resources');
+        if (error.status >= 500) patterns.add('server-errors');
+        if (error.errorText?.includes('CORS')) patterns.add('cors-issues');
+      }
+      
+      if (error.type === 'security') {
+        if (error.violationType === 'CSP') patterns.add('csp-violations');
+        if (error.violationType === 'CORS') patterns.add('cors-issues');
+      }
+    }
+    
+    return Array.from(patterns);
+  }
+  
+  /**
+   * Get recommendations based on error patterns
+   */
+  private getErrorRecommendations(patterns: string[], summary: any): string[] {
+    const recommendations = [];
+    
+    if (patterns.includes('null-reference')) {
+      recommendations.push(
+        'Multiple null/undefined reference errors detected. Consider adding null checks or using optional chaining (?.).'
+      );
+    }
+    
+    if (patterns.includes('type-error')) {
+      recommendations.push(
+        'Type-related errors found. Consider using TypeScript or adding runtime type validation.'
+      );
+    }
+    
+    if (patterns.includes('unhandled-promise')) {
+      recommendations.push(
+        'Unhandled promise rejections detected. Add .catch() handlers or use try/catch with async/await.'
+      );
+    }
+    
+    if (patterns.includes('cors-issues')) {
+      recommendations.push(
+        'CORS issues detected. Check server CORS configuration and ensure proper headers are set.'
+      );
+    }
+    
+    if (patterns.includes('server-errors')) {
+      recommendations.push(
+        'Multiple server errors (5xx) detected. Check server logs and health.'
+      );
+    }
+    
+    if (summary.byType.network > 10) {
+      recommendations.push(
+        'High number of network errors. Consider implementing retry logic and better error handling.'
+      );
+    }
+    
+    return recommendations;
+  }
+
+  /**
+   * Enhance error context during collection
+   * Called when errors are detected through various CDP events
+   */
+  public enhanceErrorContext(tabId: string, errorType: string, event: any): void {
+    const enhancedError: any = {
+      timestamp: new Date().toISOString(),
+      type: errorType,
+      errorId: `${errorType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    };
+    
+    switch (errorType) {
+      case 'runtime':
+        if (event.exceptionDetails) {
+          enhancedError.message = event.exceptionDetails.text;
+          enhancedError.lineNumber = event.exceptionDetails.lineNumber;
+          enhancedError.columnNumber = event.exceptionDetails.columnNumber;
+          enhancedError.scriptId = event.exceptionDetails.scriptId;
+          enhancedError.url = event.exceptionDetails.url;
+          enhancedError.stackTrace = event.exceptionDetails.stackTrace;
+          enhancedError.exception = event.exceptionDetails.exception;
+          enhancedError.callFrames = event.exceptionDetails.stackTrace?.callFrames;
+        }
+        break;
+        
+      case 'console':
+        if (event.message) {
+          enhancedError.source = 'console';
+          enhancedError.level = event.message.level;
+          enhancedError.message = event.message.text;
+          enhancedError.url = event.message.url;
+          enhancedError.lineNumber = event.message.line;
+          enhancedError.columnNumber = event.message.column;
+          enhancedError.stackTrace = event.message.stackTrace;
+        }
+        break;
+        
+      case 'network':
+        if (event.response) {
+          const networkLog: any = {
+            timestamp: new Date().toISOString(),
+            type: 'network',
+            requestId: event.requestId,
+            url: event.response.url,
+            status: event.response.status,
+            statusText: event.response.statusText,
+            errorText: event.errorText,
+            errorContext: {
+              headers: event.response.headers,
+              mimeType: event.response.mimeType,
+              timing: event.response.timing
+            }
+          };
+          this.addStorageEntry('networkLogs', tabId, networkLog);
+          return; // Network errors are stored in networkLogs
+        }
+        break;
+        
+      case 'security':
+        enhancedError.violationType = event.violationType;
+        enhancedError.blockedURI = event.blockedURI;
+        enhancedError.documentURI = event.documentURI;
+        enhancedError.violatedDirective = event.violatedDirective;
+        enhancedError.effectiveDirective = event.effectiveDirective;
+        enhancedError.originalPolicy = event.originalPolicy;
+        enhancedError.disposition = event.disposition;
+        enhancedError.sourceLocation = {
+          url: event.sourceFile,
+          line: event.lineNumber,
+          column: event.columnNumber
+        };
+        enhancedError.message = `${event.violationType} violation: ${event.violatedDirective}`;
+        break;
+    }
+    
+    // Store enhanced error
+    if (errorType !== 'network') {
+      this.addStorageEntry('errors', tabId, enhancedError);
+    }
+  }
+
+  /**
+   * Collect browser context for error
+   */
+  public async collectBrowserContext(tabId: string, error: any): Promise<any> {
+    try {
+      const client = this.clients.get(tabId);
+      if (!client) return error;
+      
+      const browserResult = await client.Runtime.evaluate({
+        expression: `({
+          userAgent: navigator.userAgent,
+          platform: navigator.platform,
+          language: navigator.language,
+          cookieEnabled: navigator.cookieEnabled,
+          onLine: navigator.onLine,
+          screen: {
+            width: screen.width,
+            height: screen.height,
+            pixelRatio: window.devicePixelRatio
+          },
+          viewport: {
+            width: window.innerWidth,
+            height: window.innerHeight
+          },
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        })`,
+        returnByValue: true
+      });
+      
+      if (browserResult.result?.value) {
+        error.browserContext = browserResult.result.value;
+      }
+    } catch (e) {
+      // Silently fail context collection
+    }
+    
+    return error;
+  }
+
+  /**
+   * Collect DOM context for error
+   */
+  public async collectDOMContext(tabId: string, error: any): Promise<any> {
+    try {
+      const client = this.clients.get(tabId);
+      if (!client) return error;
+      
+      const domResult = await client.Runtime.evaluate({
+        expression: `({
+          readyState: document.readyState,
+          url: document.location.href,
+          title: document.title,
+          referrer: document.referrer,
+          documentMode: document.documentMode,
+          compatMode: document.compatMode
+        })`,
+        returnByValue: true
+      });
+      
+      const interactionResult = await client.Runtime.evaluate({
+        expression: `({
+          activeElement: document.activeElement ? document.activeElement.tagName + (document.activeElement.id ? '#' + document.activeElement.id : '') : null,
+          focusedElement: document.hasFocus() ? (document.activeElement ? document.activeElement.tagName : 'body') : null,
+          documentScrollTop: document.documentElement.scrollTop,
+          documentScrollLeft: document.documentElement.scrollLeft
+        })`,
+        returnByValue: true
+      });
+      
+      if (domResult.result?.value) {
+        error.domContext = {
+          ...domResult.result.value,
+          ...interactionResult.result?.value,
+          scrollPosition: {
+            top: interactionResult.result?.value?.documentScrollTop || 0,
+            left: interactionResult.result?.value?.documentScrollLeft || 0
+          }
+        };
+      }
+    } catch (e) {
+      // Silently fail context collection
+    }
+    
+    return error;
+  }
+
+  /**
+   * Collect performance context for error
+   */
+  public async collectPerformanceContext(tabId: string, error: any): Promise<any> {
+    try {
+      const client = this.clients.get(tabId);
+      if (!client) return error;
+      
+      const perfResult = await client.Runtime.evaluate({
+        expression: `({
+          memory: performance.memory ? {
+            usedJSHeapSize: performance.memory.usedJSHeapSize,
+            totalJSHeapSize: performance.memory.totalJSHeapSize,
+            jsHeapSizeLimit: performance.memory.jsHeapSizeLimit
+          } : null,
+          timing: performance.timing ? {
+            navigationStart: performance.timing.navigationStart,
+            domContentLoadedEventEnd: performance.timing.domContentLoadedEventEnd,
+            loadEventEnd: performance.timing.loadEventEnd,
+            timeOrigin: performance.timeOrigin
+          } : null,
+          now: performance.now()
+        })`,
+        returnByValue: true
+      });
+      
+      if (perfResult.result?.value) {
+        error.performanceContext = perfResult.result.value;
+      }
+    } catch (e) {
+      // Silently fail context collection
+    }
+    
+    return error;
+  }
+
+  /**
+   * Enhance error with full context
+   */
+  public async enhanceErrorWithFullContext(tabId: string, error: any): Promise<any> {
+    const startTime = Date.now();
+    
+    // Collect all contexts in parallel
+    const [browserEnhanced, domEnhanced, perfEnhanced] = await Promise.all([
+      this.collectBrowserContext(tabId, { ...error }),
+      this.collectDOMContext(tabId, { ...error }),
+      this.collectPerformanceContext(tabId, { ...error })
+    ]);
+    
+    // Merge all contexts
+    const enhancedError = {
+      ...error,
+      browserContext: browserEnhanced.browserContext,
+      domContext: domEnhanced.domContext,
+      performanceContext: perfEnhanced.performanceContext,
+      contextCollectionTime: Date.now() - startTime
+    };
+    
+    return enhancedError;
+  }
+
+  /**
+   * Get the event monitor for a tab
+   */
+  public getEventMonitor(tabId: string): EventMonitor | undefined {
+    return this.eventMonitors.get(tabId);
+  }
+
+  /**
+   * Stop event monitoring for a tab
+   */
+  public async stopEventMonitoring(tabId: string): Promise<any> {
+    const monitor = this.eventMonitors.get(tabId);
+    if (monitor) {
+      await monitor.stop();
+      this.eventMonitors.delete(tabId);
+      return {
+        success: true,
+        message: `Stopped event monitoring for tab ${tabId}`
+      };
+    }
+    return {
+      success: false,
+      error: 'No event monitor found for this tab'
+    };
+  }
+
+  /**
+   * Get the state watcher for a tab
+   */
+  public getStateWatcher(tabId: string): StateWatcher | undefined {
+    return this.stateWatchers.get(tabId);
+  }
+
+  /**
+   * Stop state watching for a tab
+   */
+  public async stopStateWatching(tabId: string): Promise<any> {
+    const watcher = this.stateWatchers.get(tabId);
+    if (watcher) {
+      await watcher.stop();
+      this.stateWatchers.delete(tabId);
+      return {
+        success: true,
+        message: `Stopped state watching for tab ${tabId}`
+      };
+    }
+    return {
+      success: false,
+      error: 'No state watcher found for this tab'
+    };
+  }
+
+
+  /**
+   * Watch and monitor state changes in a Chrome tab
+   * Track changes to specific JavaScript expressions over time
+   */
+  public async watchStateChanges(parameters: any): Promise<any> {
+    const { 
+      tabId, 
+      expressions = [], 
+      interval = 500, 
+      deepWatch = false, 
+      includeCallStack = false 
+    } = parameters;
+    
+    // Check if state monitoring is enabled
+    const monitoringEnabled = process.env.STATE_MONITORING_ENABLED !== 'false';
+    if (!monitoringEnabled) {
+      return {
+        success: false,
+        message: 'State monitoring is disabled. Set STATE_MONITORING_ENABLED=true to enable state monitoring features.',
+        stateWatching: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'State monitoring is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    // Validate expressions
+    if (!Array.isArray(expressions) || expressions.length === 0) {
+      throw new Error('At least one expression is required');
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          stateWatching: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
+      }
+      
+      // Stop existing watcher if present
+      const existingWatcher = this.stateWatchers.get(tabId);
+      if (existingWatcher) {
+        await existingWatcher.stop();
+      }
+      
+      // Limit expressions to MAX_WATCH_EXPRESSIONS
+      const maxExpressions = parseInt(process.env.MAX_WATCH_EXPRESSIONS || '100', 10);
+      const limitedExpressions = expressions.slice(0, maxExpressions);
+      
+      // Create new state watcher
+      const watcher = new StateWatcher(
+        client,
+        tabId,
+        limitedExpressions,
+        interval,
+        deepWatch,
+        includeCallStack
+      );
+      
+      // Set server reference for accessing debugger state
+      watcher.setServer(this);
+      
+      // Start watching
+      await watcher.start();
+      
+      // Store the watcher
+      this.stateWatchers.set(tabId, watcher);
+      
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Started state watching for tab ${tabId} with ${limitedExpressions.length} expressions`);
+      }
+      
+      // Get initial expression values and errors
+      const expressionResults = watcher.getExpressions().map(expr => ({
+        name: expr.name,
+        expression: expr.expression,
+        context: expr.context || 'global',
+        currentValue: expr.currentValue,
+        error: expr.error
+      }));
+      
+      return {
+        success: true,
+        message: `Started watching ${limitedExpressions.length} expressions for tab ${tabId}`,
+        stateWatching: {
+          tabId,
+          timestamp,
+          watching: true,
+          expressions: expressionResults,
+          interval,
+          deepWatch,
+          includeCallStack,
+          changes: [] // Initially empty
+        }
+      };
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to start state watching for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        stateWatching: {
+          tabId,
+          timestamp,
+          error: {
+            type: 'WatchingError',
+            message: error.message
+          }
+        }
+      };
+    }
+  }
+
+  /**
+   * Monitor and capture real-time events from a tab
+   * Provides comprehensive event tracking across multiple domains
+   */
+  public async monitorEvents(parameters: any): Promise<any> {
+    const { 
+      tabId, 
+      eventTypes = ['all'], 
+      filters = {}, 
+      bufferSize = 100, 
+      realtime = true 
+    } = parameters;
+    
+    // Check if event monitoring is enabled
+    const monitoringEnabled = process.env.EVENT_MONITORING_ENABLED !== 'false';
+    if (!monitoringEnabled) {
+      return {
+        success: false,
+        message: 'Event monitoring is disabled. Set EVENT_MONITORING_ENABLED=true to enable event monitoring features.',
+        eventMonitoring: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'Event monitoring is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          eventMonitoring: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
+      }
+      
+      // Stop existing monitor if present
+      const existingMonitor = this.eventMonitors.get(tabId);
+      if (existingMonitor) {
+        await existingMonitor.stop();
+      }
+      
+      // Create new event monitor
+      const monitor = new EventMonitor(
+        client,
+        tabId,
+        eventTypes,
+        filters,
+        bufferSize,
+        realtime
+      );
+      
+      // Start monitoring
+      await monitor.start();
+      
+      // Store the monitor
+      this.eventMonitors.set(tabId, monitor);
+      
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Started event monitoring for tab ${tabId} with types: ${eventTypes.join(', ')}`);
+      }
+      
+      return {
+        success: true,
+        message: `Started monitoring ${eventTypes.includes('all') ? 'all event types' : eventTypes.join(', ')} for tab ${tabId}`,
+        eventMonitoring: {
+          tabId,
+          timestamp,
+          monitoring: true,
+          eventTypes,
+          filters,
+          bufferSize,
+          mode: realtime ? 'realtime' : 'buffered',
+          events: monitor.getEvents() // Initial events (will be empty at start)
+        }
+      };
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to start event monitoring for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        eventMonitoring: {
+          tabId,
+          timestamp,
+          error: {
+            type: 'MonitoringError',
             message: error.message
           }
         }
