@@ -16,6 +16,229 @@ const CHROME_DEBUG_PORT = parseInt(process.env.CHROME_DEBUG_PORT || '9222', 10);
 const CHROME_DEBUG_HOST = process.env.CHROME_DEBUG_HOST || 'localhost';
 
 /**
+ * State Watcher class for monitoring state changes
+ */
+class StateWatcher {
+  private client: any;
+  private tabId: string;
+  private expressions: any[];
+  private interval: number;
+  private deepWatch: boolean;
+  private includeCallStack: boolean;
+  private intervalId: NodeJS.Timeout | null = null;
+  private previousValues: Map<string, any> = new Map();
+  private changes: any[] = [];
+  private enabled: boolean = false;
+  private server: ChromeDevToolsMCPServer | null = null;
+  
+  constructor(client: any, tabId: string, expressions: any[], interval: number = 500, deepWatch: boolean = false, includeCallStack: boolean = false) {
+    this.client = client;
+    this.tabId = tabId;
+    this.expressions = expressions;
+    this.interval = interval;
+    this.deepWatch = deepWatch;
+    this.includeCallStack = includeCallStack;
+  }
+  
+  setServer(server: ChromeDevToolsMCPServer): void {
+    this.server = server;
+  }
+  
+  async start(): Promise<void> {
+    if (this.enabled) return;
+    
+    // Get initial values
+    await this.evaluateExpressions();
+    
+    // Start polling
+    this.intervalId = setInterval(async () => {
+      await this.checkForChanges();
+    }, this.interval);
+    
+    this.enabled = true;
+  }
+  
+  async stop(): Promise<void> {
+    if (!this.enabled) return;
+    
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+    
+    this.enabled = false;
+  }
+  
+  private async evaluateExpressions(): Promise<void> {
+    for (const expr of this.expressions) {
+      try {
+        const value = await this.evaluateExpression(expr);
+        this.previousValues.set(expr.name, value);
+        expr.currentValue = value;
+        expr.error = undefined;
+      } catch (error: any) {
+        expr.error = error.message;
+        expr.currentValue = undefined;
+      }
+    }
+  }
+  
+  private async evaluateExpression(expr: any): Promise<any> {
+    let result;
+    
+    if (expr.context === 'local') {
+      // Evaluate in local context if debugger is paused
+      const callFrameId = await this.getCurrentCallFrameId();
+      if (callFrameId) {
+        result = await this.client.Debugger.evaluateOnCallFrame({
+          callFrameId,
+          expression: expr.expression,
+          returnByValue: false
+        });
+      } else {
+        throw new Error('Cannot evaluate in local context - debugger not paused');
+      }
+    } else {
+      // Evaluate in global context
+      result = await this.client.Runtime.evaluate({
+        expression: expr.expression,
+        returnByValue: false
+      });
+    }
+    
+    if (result.exceptionDetails) {
+      throw new Error(result.exceptionDetails.text || 'Evaluation error');
+    }
+    
+    // Handle deep watch for objects
+    if (this.deepWatch && result.result?.objectId) {
+      const serialized = await this.serializeObject(result.result.objectId);
+      return serialized;
+    }
+    
+    return result.result?.value;
+  }
+  
+  private async serializeObject(objectId: string): Promise<string> {
+    try {
+      const result = await this.client.Runtime.callFunctionOn({
+        objectId,
+        functionDeclaration: `function() { 
+          try { 
+            return JSON.stringify(this, (key, value) => {
+              if (typeof value === 'object' && value !== null) {
+                if (this._seenObjects?.has(value)) {
+                  return '[Circular]';
+                }
+                if (!this._seenObjects) {
+                  Object.defineProperty(this, '_seenObjects', {
+                    value: new WeakSet(),
+                    configurable: true
+                  });
+                }
+                this._seenObjects.add(value);
+              }
+              return value;
+            });
+          } catch (e) { 
+            return '[Serialization Error]'; 
+          }
+        }`,
+        returnByValue: true
+      });
+      
+      return result.result?.value || '[Unknown]';
+    } catch (error) {
+      return '[Serialization Error]';
+    }
+  }
+  
+  private async checkForChanges(): Promise<void> {
+    for (const expr of this.expressions) {
+      try {
+        const newValue = await this.evaluateExpression(expr);
+        const oldValue = this.previousValues.get(expr.name);
+        
+        if (this.hasChanged(oldValue, newValue)) {
+          const change: any = {
+            timestamp: new Date().toISOString(),
+            name: expr.name,
+            expression: expr.expression,
+            oldValue,
+            newValue
+          };
+          
+          if (this.includeCallStack) {
+            change.callStack = await this.captureCallStack();
+          }
+          
+          this.changes.push(change);
+          this.previousValues.set(expr.name, newValue);
+          expr.currentValue = newValue;
+        }
+      } catch (error: any) {
+        expr.error = error.message;
+      }
+    }
+  }
+  
+  private hasChanged(oldValue: any, newValue: any): boolean {
+    if (this.deepWatch && typeof oldValue === 'string' && typeof newValue === 'string') {
+      // For deep watch, compare serialized strings
+      return oldValue !== newValue;
+    }
+    return oldValue !== newValue;
+  }
+  
+  private async getCurrentCallFrameId(): Promise<string | null> {
+    if (!this.server) return null;
+    
+    const debuggerState = this.server.getDebuggerState(this.tabId);
+    if (debuggerState?.isPaused && debuggerState.callFrames?.length > 0) {
+      return debuggerState.callFrames[0].callFrameId;
+    }
+    
+    return null;
+  }
+  
+  private async captureCallStack(): Promise<any[]> {
+    try {
+      const result = await this.client.Runtime.evaluate({
+        expression: `(new Error()).stack.split('\\n').slice(1).map(line => {
+          const match = line.match(/at\\s+(?:(.+?)\\s+\\()?(.+?):(\\d+):(\\d+)/);
+          if (match) {
+            return {
+              functionName: match[1] || 'anonymous',
+              url: match[2],
+              lineNumber: parseInt(match[3]),
+              columnNumber: parseInt(match[4])
+            };
+          }
+          return null;
+        }).filter(Boolean)`,
+        returnByValue: true
+      });
+      
+      return result.result?.value || [];
+    } catch (error) {
+      return [];
+    }
+  }
+  
+  getChanges(): any[] {
+    return this.changes;
+  }
+  
+  getExpressions(): any[] {
+    return this.expressions;
+  }
+  
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+}
+
+/**
  * Event Monitor class for real-time event tracking
  */
 class EventMonitor {
@@ -247,6 +470,9 @@ export class ChromeDevToolsMCPServer {
   
   // Event monitoring for v1.1 live development features
   private eventMonitors: Map<string, EventMonitor> = new Map();
+  
+  // State watching for v1.1 live development features
+  private stateWatchers: Map<string, StateWatcher> = new Map();
 
   constructor() {
     // For now, we'll initialize this as a placeholder
@@ -6272,11 +6498,50 @@ export class ChromeDevToolsMCPServer {
   }
 
   /**
+   * Get the state watcher for a tab
+   */
+  public getStateWatcher(tabId: string): StateWatcher | undefined {
+    return this.stateWatchers.get(tabId);
+  }
+
+  /**
+   * Stop state watching for a tab
+   */
+  public async stopStateWatching(tabId: string): Promise<any> {
+    const watcher = this.stateWatchers.get(tabId);
+    if (watcher) {
+      await watcher.stop();
+      this.stateWatchers.delete(tabId);
+      return {
+        success: true,
+        message: `Stopped state watching for tab ${tabId}`
+      };
+    }
+    return {
+      success: false,
+      error: 'No state watcher found for this tab'
+    };
+  }
+
+  /**
+   * Update debugger state for a tab (used by tests)
+   */
+  public updateDebuggerState(tabId: string, state: any): void {
+    this.debuggerStates.set(tabId, state);
+  }
+
+  /**
    * Watch and monitor state changes in a Chrome tab
    * Track changes to specific JavaScript expressions over time
    */
   public async watchStateChanges(parameters: any): Promise<any> {
-    const { tabId, expressions: _expressions, interval: _interval, deepWatch: _deepWatch, includeCallStack: _includeCallStack } = parameters;
+    const { 
+      tabId, 
+      expressions = [], 
+      interval = 500, 
+      deepWatch = false, 
+      includeCallStack = false 
+    } = parameters;
     
     // Check if state monitoring is enabled
     const monitoringEnabled = process.env.STATE_MONITORING_ENABLED !== 'false';
@@ -6295,20 +6560,116 @@ export class ChromeDevToolsMCPServer {
       };
     }
     
-    // For now, return a stub implementation
-    // This will be fully implemented in Task 20.4
-    return {
-      success: false,
-      message: 'watch_state_changes is not yet implemented. This tool will be available in Task 20.4.',
-      stateWatching: {
-        tabId,
-        timestamp: new Date().toISOString(),
-        error: {
-          type: 'NotImplemented',
-          message: 'Tool implementation pending'
-        }
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    // Validate expressions
+    if (!Array.isArray(expressions) || expressions.length === 0) {
+      throw new Error('At least one expression is required');
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          stateWatching: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
       }
-    };
+      
+      // Stop existing watcher if present
+      const existingWatcher = this.stateWatchers.get(tabId);
+      if (existingWatcher) {
+        await existingWatcher.stop();
+      }
+      
+      // Limit expressions to MAX_WATCH_EXPRESSIONS
+      const maxExpressions = parseInt(process.env.MAX_WATCH_EXPRESSIONS || '100', 10);
+      const limitedExpressions = expressions.slice(0, maxExpressions);
+      
+      // Create new state watcher
+      const watcher = new StateWatcher(
+        client,
+        tabId,
+        limitedExpressions,
+        interval,
+        deepWatch,
+        includeCallStack
+      );
+      
+      // Set server reference for accessing debugger state
+      watcher.setServer(this);
+      
+      // Start watching
+      await watcher.start();
+      
+      // Store the watcher
+      this.stateWatchers.set(tabId, watcher);
+      
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Started state watching for tab ${tabId} with ${limitedExpressions.length} expressions`);
+      }
+      
+      // Get initial expression values and errors
+      const expressionResults = watcher.getExpressions().map(expr => ({
+        name: expr.name,
+        expression: expr.expression,
+        context: expr.context || 'global',
+        currentValue: expr.currentValue,
+        error: expr.error
+      }));
+      
+      return {
+        success: true,
+        message: `Started watching ${limitedExpressions.length} expressions for tab ${tabId}`,
+        stateWatching: {
+          tabId,
+          timestamp,
+          watching: true,
+          expressions: expressionResults,
+          interval,
+          deepWatch,
+          includeCallStack,
+          changes: [] // Initially empty
+        }
+      };
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to start state watching for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        stateWatching: {
+          tabId,
+          timestamp,
+          error: {
+            type: 'WatchingError',
+            message: error.message
+          }
+        }
+      };
+    }
   }
 
   /**
