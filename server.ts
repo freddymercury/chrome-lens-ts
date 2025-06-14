@@ -16,6 +16,213 @@ const CHROME_DEBUG_PORT = parseInt(process.env.CHROME_DEBUG_PORT || '9222', 10);
 const CHROME_DEBUG_HOST = process.env.CHROME_DEBUG_HOST || 'localhost';
 
 /**
+ * Event Monitor class for real-time event tracking
+ */
+class EventMonitor {
+  private events: any[] = [];
+  private eventHandlers: Map<string, Function> = new Map();
+  private client: any;
+  private eventTypes: string[];
+  private filters: any;
+  private bufferSize: number;
+  private realtime: boolean;
+  private enabled: boolean = false;
+  
+  constructor(client: any, _tabId: string, eventTypes: string[], filters: any = {}, bufferSize: number = 100, realtime: boolean = true) {
+    this.client = client;
+    this.eventTypes = eventTypes;
+    this.filters = filters;
+    this.bufferSize = bufferSize;
+    this.realtime = realtime;
+  }
+  
+  async start(): Promise<void> {
+    if (this.enabled) return;
+    
+    // Enable required domains based on event types
+    const typesToMonitor = this.eventTypes.includes('all') ? 
+      ['dom', 'console', 'network', 'script', 'performance', 'security', 'storage'] : 
+      this.eventTypes;
+    
+    for (const type of typesToMonitor) {
+      await this.enableDomain(type);
+      this.setupEventHandlers(type);
+    }
+    
+    this.enabled = true;
+  }
+  
+  async stop(): Promise<void> {
+    if (!this.enabled) return;
+    
+    // Remove all event handlers
+    for (const [event, handler] of this.eventHandlers) {
+      this.client.off(event, handler);
+    }
+    this.eventHandlers.clear();
+    this.enabled = false;
+  }
+  
+  private async enableDomain(eventType: string): Promise<void> {
+    switch (eventType) {
+      case 'dom':
+        await this.client.DOM.enable();
+        break;
+      case 'console':
+        await this.client.Console.enable();
+        break;
+      case 'network':
+        await this.client.Network.enable();
+        break;
+      case 'script':
+        if (this.client.Debugger) {
+          await this.client.Debugger.enable();
+        }
+        break;
+      case 'performance':
+        if (this.client.Performance) {
+          await this.client.Performance.enable();
+        }
+        break;
+      case 'security':
+        if (this.client.Security) {
+          await this.client.Security.enable();
+        }
+        break;
+      case 'storage':
+        if (this.client.DOMStorage) {
+          await this.client.DOMStorage.enable();
+        }
+        break;
+    }
+  }
+  
+  private setupEventHandlers(eventType: string): void {
+    switch (eventType) {
+      case 'dom':
+        this.addEventHandler('DOM.childNodeInserted', (params: any) => 
+          this.addEvent('dom', 'childNodeInserted', params));
+        this.addEventHandler('DOM.childNodeRemoved', (params: any) => 
+          this.addEvent('dom', 'childNodeRemoved', params));
+        this.addEventHandler('DOM.attributeModified', (params: any) => 
+          this.addEvent('dom', 'attributeModified', params));
+        this.addEventHandler('DOM.attributeRemoved', (params: any) => 
+          this.addEvent('dom', 'attributeRemoved', params));
+        break;
+        
+      case 'console':
+        this.addEventHandler('Console.messageAdded', (params: any) => {
+          const message = params.message;
+          // Apply severity filter
+          if (this.filters.severity && !this.matchesSeverity(message.level, this.filters.severity)) {
+            return;
+          }
+          this.addEvent('console', 'messageAdded', message);
+        });
+        break;
+        
+      case 'network':
+        this.addEventHandler('Network.requestWillBeSent', (params: any) => {
+          // Apply URL filter
+          if (this.filters.url && !params.request?.url?.includes(this.filters.url)) {
+            return;
+          }
+          this.addEvent('network', 'requestWillBeSent', params);
+        });
+        this.addEventHandler('Network.responseReceived', (params: any) => {
+          if (this.filters.url && !params.response?.url?.includes(this.filters.url)) {
+            return;
+          }
+          this.addEvent('network', 'responseReceived', params);
+        });
+        this.addEventHandler('Network.loadingFailed', (params: any) => {
+          this.addEvent('network', 'loadingFailed', params);
+        });
+        break;
+        
+      case 'script':
+        this.addEventHandler('Debugger.scriptParsed', (params: any) => 
+          this.addEvent('script', 'scriptParsed', params));
+        this.addEventHandler('Debugger.scriptFailedToParse', (params: any) => 
+          this.addEvent('script', 'scriptFailedToParse', params));
+        break;
+        
+      case 'performance':
+        this.addEventHandler('Performance.metrics', (params: any) => 
+          this.addEvent('performance', 'metrics', params));
+        break;
+        
+      case 'security':
+        this.addEventHandler('Security.securityStateChanged', (params: any) => 
+          this.addEvent('security', 'securityStateChanged', params));
+        this.addEventHandler('Security.certificateError', (params: any) => 
+          this.addEvent('security', 'certificateError', params));
+        break;
+        
+      case 'storage':
+        this.addEventHandler('DOMStorage.domStorageItemAdded', (params: any) => 
+          this.addEvent('storage', 'domStorageItemAdded', params));
+        this.addEventHandler('DOMStorage.domStorageItemRemoved', (params: any) => 
+          this.addEvent('storage', 'domStorageItemRemoved', params));
+        this.addEventHandler('DOMStorage.domStorageItemUpdated', (params: any) => 
+          this.addEvent('storage', 'domStorageItemUpdated', params));
+        this.addEventHandler('DOMStorage.domStorageItemsCleared', (params: any) => 
+          this.addEvent('storage', 'domStorageItemsCleared', params));
+        break;
+    }
+  }
+  
+  private addEventHandler(event: string, handler: Function): void {
+    this.client.on(event, handler);
+    this.eventHandlers.set(event, handler);
+  }
+  
+  private matchesSeverity(level: string, minSeverity: string): boolean {
+    const severityOrder = ['verbose', 'info', 'warning', 'error'];
+    const levelIndex = severityOrder.indexOf(level);
+    const minIndex = severityOrder.indexOf(minSeverity);
+    return levelIndex >= minIndex;
+  }
+  
+  private addEvent(type: string, eventName: string, data: any): void {
+    // Apply event name filter
+    if (this.filters.eventName && !eventName.includes(this.filters.eventName)) {
+      return;
+    }
+    
+    const event = {
+      timestamp: new Date().toISOString(),
+      type,
+      eventName,
+      data
+    };
+    
+    // Add to buffer
+    this.events.push(event);
+    
+    // Maintain buffer size limit
+    if (this.events.length > this.bufferSize) {
+      this.events.shift();
+    }
+    
+    // In real-time mode, we could emit events to a stream here
+    // For now, events are stored in the buffer
+  }
+  
+  getEvents(): any[] {
+    return this.events;
+  }
+  
+  isRealtime(): boolean {
+    return this.realtime;
+  }
+  
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+}
+
+/**
  * Chrome DevTools MCP Server
  * Provides direct access to Chrome's DevTools Protocol for granular real-time debugging
  */
@@ -37,6 +244,9 @@ export class ChromeDevToolsMCPServer {
   
   // Debugger state tracking for v1.1 debugging features
   private debuggerStates: Map<string, any> = new Map();
+  
+  // Event monitoring for v1.1 live development features
+  private eventMonitors: Map<string, EventMonitor> = new Map();
 
   constructor() {
     // For now, we'll initialize this as a placeholder
@@ -5213,7 +5423,7 @@ export class ChromeDevToolsMCPServer {
   private async analyzeGlobalScope(
     client: any,
     includePrototype: boolean,
-    includeGetters: boolean,
+    _includeGetters: boolean,
     maxResults: number
   ): Promise<any> {
     try {
@@ -5269,7 +5479,7 @@ export class ChromeDevToolsMCPServer {
   private async analyzeLocalScope(
     client: any,
     debuggerState: any,
-    includePrototype: boolean,
+    _includePrototype: boolean,
     maxResults: number
   ): Promise<any> {
     try {
@@ -5314,7 +5524,7 @@ export class ChromeDevToolsMCPServer {
   private async analyzeClosureScope(
     client: any,
     debuggerState: any,
-    includePrototype: boolean,
+    _includePrototype: boolean,
     maxResults: number
   ): Promise<any> {
     try {
@@ -5408,7 +5618,7 @@ export class ChromeDevToolsMCPServer {
     const { 
       tabId, 
       errorType = 'all', 
-      includeStackTrace = true, 
+      _includeStackTrace = true, 
       includeSourceContext = true, 
       timeRange = 300 
     } = parameters;
@@ -5975,11 +6185,43 @@ export class ChromeDevToolsMCPServer {
   }
 
   /**
+   * Get the event monitor for a tab
+   */
+  public getEventMonitor(tabId: string): EventMonitor | undefined {
+    return this.eventMonitors.get(tabId);
+  }
+
+  /**
+   * Stop event monitoring for a tab
+   */
+  public async stopEventMonitoring(tabId: string): Promise<any> {
+    const monitor = this.eventMonitors.get(tabId);
+    if (monitor) {
+      await monitor.stop();
+      this.eventMonitors.delete(tabId);
+      return {
+        success: true,
+        message: `Stopped event monitoring for tab ${tabId}`
+      };
+    }
+    return {
+      success: false,
+      error: 'No event monitor found for this tab'
+    };
+  }
+
+  /**
    * Monitor and capture real-time events from a tab
    * Provides comprehensive event tracking across multiple domains
    */
   public async monitorEvents(parameters: any): Promise<any> {
-    const { tabId, eventTypes: _eventTypes, filters: _filters, bufferSize: _bufferSize, realtime: _realtime } = parameters;
+    const { 
+      tabId, 
+      eventTypes = ['all'], 
+      filters = {}, 
+      bufferSize = 100, 
+      realtime = true 
+    } = parameters;
     
     // Check if event monitoring is enabled
     const monitoringEnabled = process.env.EVENT_MONITORING_ENABLED !== 'false';
@@ -5998,20 +6240,95 @@ export class ChromeDevToolsMCPServer {
       };
     }
     
-    // For now, return a stub implementation
-    // This will be fully implemented in Task 20.2
-    return {
-      success: false,
-      message: 'monitor_events is not yet implemented. This tool will be available in Task 20.2.',
-      eventMonitoring: {
-        tabId,
-        timestamp: new Date().toISOString(),
-        error: {
-          type: 'NotImplemented',
-          message: 'Tool implementation pending'
-        }
+    // Validate tabId parameter
+    if (!tabId || typeof tabId !== 'string' || tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+    
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(tabId)) {
+      throw new Error(`Invalid tab ID format: ${tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    try {
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          error: 'Tab not connected. Use start_monitoring first.',
+          eventMonitoring: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected`
+            }
+          }
+        };
       }
-    };
+      
+      // Stop existing monitor if present
+      const existingMonitor = this.eventMonitors.get(tabId);
+      if (existingMonitor) {
+        await existingMonitor.stop();
+      }
+      
+      // Create new event monitor
+      const monitor = new EventMonitor(
+        client,
+        tabId,
+        eventTypes,
+        filters,
+        bufferSize,
+        realtime
+      );
+      
+      // Start monitoring
+      await monitor.start();
+      
+      // Store the monitor
+      this.eventMonitors.set(tabId, monitor);
+      
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Started event monitoring for tab ${tabId} with types: ${eventTypes.join(', ')}`);
+      }
+      
+      return {
+        success: true,
+        message: `Started monitoring ${eventTypes.includes('all') ? 'all event types' : eventTypes.join(', ')} for tab ${tabId}`,
+        eventMonitoring: {
+          tabId,
+          timestamp,
+          monitoring: true,
+          eventTypes,
+          filters,
+          bufferSize,
+          mode: realtime ? 'realtime' : 'buffered',
+          events: monitor.getEvents() // Initial events (will be empty at start)
+        }
+      };
+      
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to start event monitoring for tab ${tabId}:`, error.message);
+      }
+      
+      return {
+        success: false,
+        error: error.message,
+        eventMonitoring: {
+          tabId,
+          timestamp,
+          error: {
+            type: 'MonitoringError',
+            message: error.message
+          }
+        }
+      };
+    }
   }
 }
 
