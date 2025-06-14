@@ -552,6 +552,44 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId']
         }
+      },
+      {
+        name: 'analyze_runtime_state',
+        description: 'Analyze the complete runtime state of a Chrome tab using Chrome DevTools Protocol. Provides comprehensive analysis of global state, local variables, closures, and memory usage for debugging and optimization.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'The ID of the Chrome tab to analyze',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            scope: {
+              type: 'string',
+              enum: ['global', 'local', 'closure', 'all'],
+              default: 'all',
+              description: 'The scope of state to analyze. global: Window/global objects, local: Current call frame locals, closure: Closure variables, all: Complete state analysis'
+            },
+            includePrototype: {
+              type: 'boolean',
+              default: false,
+              description: 'Whether to include prototype chain properties in the analysis'
+            },
+            includeGetters: {
+              type: 'boolean',
+              default: false,
+              description: 'Whether to invoke and include getter properties (may have side effects)'
+            },
+            maxResults: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 1000,
+              default: 100,
+              description: 'Maximum number of objects to analyze in detail'
+            }
+          },
+          required: ['tabId']
+        }
       }
     ];
     
@@ -634,6 +672,9 @@ export class ChromeDevToolsMCPServer {
       
       case 'inspect_variables':
         return await this.inspectVariables(parameters);
+      
+      case 'analyze_runtime_state':
+        return await this.analyzeRuntimeState(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -4923,6 +4964,46 @@ export class ChromeDevToolsMCPServer {
       }
       return [];
     }
+  }
+
+  /**
+   * Analyze the complete runtime state of a tab
+   * Provides comprehensive analysis of variables, objects, and memory usage
+   */
+  public async analyzeRuntimeState(parameters: any): Promise<any> {
+    const { tabId, scope: _scope, includePrototype: _includePrototype, includeGetters: _includeGetters, maxResults: _maxResults } = parameters;
+    
+    // Check if state analysis is enabled
+    const analysisEnabled = process.env.STATE_ANALYSIS_ENABLED !== 'false';
+    if (!analysisEnabled) {
+      return {
+        success: false,
+        message: 'State analysis is disabled. Set STATE_ANALYSIS_ENABLED=true to enable state analysis features.',
+        stateAnalysis: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'FeatureDisabled',
+            message: 'State analysis is disabled via environment variable'
+          }
+        }
+      };
+    }
+    
+    // For now, return a stub implementation
+    // This will be fully implemented in Task 18.4
+    return {
+      success: false,
+      message: 'analyze_runtime_state is not yet implemented. This tool will be available in Task 18.4.',
+      stateAnalysis: {
+        tabId,
+        timestamp: new Date().toISOString(),
+        error: {
+          type: 'NotImplemented',
+          message: 'Tool implementation pending'
+        }
+      }
+    };
   }
 }
 
