@@ -374,6 +374,35 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId']
         }
+      },
+      {
+        name: 'list_source_files',
+        description: 'List JavaScript, CSS, and HTML source files loaded in a Chrome tab for debugging and code analysis. Essential for LLM-driven debugging workflows.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tabId: {
+              type: 'string',
+              description: 'ID of the Chrome tab to list source files for (from list_tabs response)',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            includeContent: {
+              type: 'boolean',
+              description: 'Include source file content in the response (use carefully for large files)',
+              default: false
+            },
+            fileTypes: {
+              type: 'array',
+              description: 'Filter by file types',
+              items: {
+                type: 'string',
+                enum: ['js', 'ts', 'css', 'html']
+              },
+              default: ['js', 'ts', 'css', 'html']
+            }
+          },
+          required: ['tabId']
+        }
       }
     ];
     
@@ -441,6 +470,9 @@ export class ChromeDevToolsMCPServer {
       
       case 'get_performance_metrics':
         return await this.getPerformanceMetrics(parameters);
+      
+      case 'list_source_files':
+        return await this.listSourceFiles(parameters);
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -756,19 +788,23 @@ export class ChromeDevToolsMCPServer {
       const enabledDomains = [];
       
       try {
-        await client.Console.enable();
-        enabledDomains.push('Console');
+        // Use Runtime.consoleAPICalled instead of deprecated Console domain
+        await client.Runtime.enable();
+        enabledDomains.push('Runtime');
         
-        // Set up console message event listener
-        client.Console.messageAdded = (event: any) => {
+        // Set up console message event listener using Runtime domain
+        client.Runtime.on('consoleAPICalled', (event: any) => {
           const consoleMessage = {
-            level: event.level || 'log',
-            text: event.text || '',
+            level: event.type || 'log',
+            text: event.args ? event.args.map((arg: any) => arg.value || arg.description || '[object]').join(' ') : '',
             timestamp: event.timestamp || Date.now(),
-            url: event.url || '',
-            line: event.line || 0,
-            column: event.column || 0,
-            source: event.source || 'console-api'
+            url: '',
+            line: 0,
+            column: 0,
+            source: 'console-api',
+            args: event.args || [],
+            executionContextId: event.executionContextId || 0,
+            stackTrace: event.stackTrace || null
           };
           
           // Store console message for this tab
@@ -780,22 +816,10 @@ export class ChromeDevToolsMCPServer {
           if (LOG_LEVEL === 'debug') {
             console.log(`Console message captured for tab ${tabId}:`, consoleMessage.level, consoleMessage.text);
           }
-        };
+        });
         
         if (LOG_LEVEL === 'debug') {
-          console.log('Console domain enabled with message listener');
-        }
-      } catch (error: any) {
-        if (LOG_LEVEL === 'debug') {
-          console.log('Failed to enable Console domain:', error.message);
-        }
-      }
-
-      try {
-        await client.Runtime.enable();
-        enabledDomains.push('Runtime');
-        if (LOG_LEVEL === 'debug') {
-          console.log('Runtime domain enabled');
+          console.log('Runtime domain enabled with console message listener');
         }
       } catch (error: any) {
         if (LOG_LEVEL === 'debug') {
@@ -803,12 +827,13 @@ export class ChromeDevToolsMCPServer {
         }
       }
 
+
       try {
         await client.Network.enable();
         enabledDomains.push('Network');
         
-        // Set up network request event listener
-        client.Network.requestWillBeSent = (event: any) => {
+        // Set up network request event listener using proper event pattern
+        client.Network.on('requestWillBeSent', (event: any) => {
           const networkRequest = {
             type: 'request',
             requestId: event.requestId || '',
@@ -831,10 +856,10 @@ export class ChromeDevToolsMCPServer {
           if (LOG_LEVEL === 'debug') {
             console.log(`Network request captured for tab ${tabId}:`, networkRequest.method, networkRequest.url);
           }
-        };
+        });
         
-        // Set up network response event listener
-        client.Network.responseReceived = (event: any) => {
+        // Set up network response event listener using proper event pattern
+        client.Network.on('responseReceived', (event: any) => {
           const networkResponse = {
             type: 'response',
             requestId: event.requestId || '',
@@ -861,7 +886,7 @@ export class ChromeDevToolsMCPServer {
           if (LOG_LEVEL === 'debug') {
             console.log(`Network response captured for tab ${tabId}:`, networkResponse.status, networkResponse.url);
           }
-        };
+        });
         
         if (LOG_LEVEL === 'debug') {
           console.log('Network domain enabled with request and response listeners');
@@ -3173,6 +3198,225 @@ export class ChromeDevToolsMCPServer {
     }
 
     return recommendations;
+  }
+
+  /**
+   * List source files loaded in a Chrome tab for debugging and analysis
+   */
+  public async listSourceFiles(parameters: any): Promise<any> {
+    if (LOG_LEVEL === 'debug') {
+      console.log('Listing source files for tab:', parameters);
+    }
+
+    // Validate tabId parameter
+    if (!parameters.tabId || typeof parameters.tabId !== 'string' || parameters.tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(parameters.tabId)) {
+      throw new Error(`Invalid tab ID format: ${parameters.tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+
+    const tabId = parameters.tabId;
+    const includeContent = parameters.includeContent || false;
+    const fileTypes = parameters.fileTypes || ['js', 'ts', 'css', 'html'];
+
+    try {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Listing source files for tab ${tabId} (content: ${includeContent}, types: ${fileTypes.join(', ')})`);
+      }
+
+      const timestamp = new Date().toISOString();
+
+      // Check if tab is connected
+      const client = this.clients.get(tabId);
+      if (!client) {
+        return {
+          success: false,
+          message: `Tab ${tabId} not found or not connected`,
+          sourceFiles: {
+            tabId,
+            timestamp,
+            error: {
+              type: 'TabNotConnected',
+              message: `Tab with ID ${tabId} is not connected. Use start_monitoring first.`
+            }
+          }
+        };
+      }
+
+      // Enable debugger domain to access scripts and source files
+      await client.Debugger.enable();
+      
+      // Enable CSS domain for stylesheets
+      await client.CSS.enable();
+
+      // Get all loaded scripts
+      const scriptsResponse = await client.Runtime.evaluate({
+        expression: `
+          (function() {
+            const scripts = Array.from(document.scripts).map(script => ({
+              src: script.src || null,
+              type: script.type || 'text/javascript',
+              inline: !script.src,
+              content: script.src ? null : script.textContent
+            }));
+            
+            const stylesheets = Array.from(document.styleSheets).map(sheet => ({
+              href: sheet.href || null,
+              type: 'text/css',
+              inline: !sheet.href,
+              disabled: sheet.disabled
+            }));
+            
+            return {
+              scripts,
+              stylesheets,
+              documentURL: document.location.href,
+              title: document.title
+            };
+          })()
+        `,
+        returnByValue: true
+      });
+
+      if (scriptsResponse.exceptionDetails) {
+        throw new Error(`Script evaluation failed: ${scriptsResponse.exceptionDetails.text}`);
+      }
+
+      const pageData = scriptsResponse.result.value;
+      const sourceFiles: any[] = [];
+
+      // Process JavaScript files
+      if (fileTypes.includes('js') || fileTypes.includes('ts')) {
+        for (const script of pageData.scripts) {
+          const fileExtension = script.src ? 
+            (script.src.includes('.ts') ? 'ts' : 'js') : 
+            'js';
+          
+          if (fileTypes.includes(fileExtension)) {
+            const sourceFile: any = {
+              type: fileExtension,
+              url: script.src || 'inline',
+              inline: script.inline,
+              size: script.content ? script.content.length : null
+            };
+
+            if (includeContent && script.content) {
+              sourceFile.content = script.content;
+            }
+
+            sourceFiles.push(sourceFile);
+          }
+        }
+      }
+
+      // Process CSS files
+      if (fileTypes.includes('css')) {
+        for (const stylesheet of pageData.stylesheets) {
+          const sourceFile: any = {
+            type: 'css',
+            url: stylesheet.href || 'inline',
+            inline: stylesheet.inline,
+            disabled: stylesheet.disabled
+          };
+
+          if (includeContent && stylesheet.inline) {
+            try {
+              // Try to get inline CSS content
+              const cssContent = await client.Runtime.evaluate({
+                expression: `
+                  (function() {
+                    const sheet = Array.from(document.styleSheets).find(s => s.href === ${JSON.stringify(stylesheet.href)});
+                    if (!sheet || !sheet.cssRules) return null;
+                    return Array.from(sheet.cssRules).map(rule => rule.cssText).join('\\n');
+                  })()
+                `,
+                returnByValue: true
+              });
+              
+              if (cssContent.result.value) {
+                sourceFile.content = cssContent.result.value;
+                sourceFile.size = cssContent.result.value.length;
+              }
+            } catch (error) {
+              // CSS content might not be accessible due to CORS
+              sourceFile.contentError = 'Unable to access CSS content (CORS restriction)';
+            }
+          }
+
+          sourceFiles.push(sourceFile);
+        }
+      }
+
+      // Process HTML document
+      if (fileTypes.includes('html')) {
+        const htmlFile: any = {
+          type: 'html',
+          url: pageData.documentURL,
+          inline: false,
+          title: pageData.title
+        };
+
+        if (includeContent) {
+          const htmlContent = await client.Runtime.evaluate({
+            expression: 'document.documentElement.outerHTML',
+            returnByValue: true
+          });
+          
+          if (htmlContent.result.value) {
+            htmlFile.content = htmlContent.result.value;
+            htmlFile.size = htmlContent.result.value.length;
+          }
+        }
+
+        sourceFiles.push(htmlFile);
+      }
+
+      return {
+        success: true,
+        message: `Found ${sourceFiles.length} source files in tab ${tabId}`,
+        sourceFiles: {
+          tabId,
+          timestamp,
+          documentURL: pageData.documentURL,
+          title: pageData.title,
+          files: sourceFiles,
+          summary: {
+            totalFiles: sourceFiles.length,
+            fileTypes: fileTypes,
+            includeContent: includeContent,
+            breakdown: {
+              javascript: sourceFiles.filter(f => f.type === 'js').length,
+              typescript: sourceFiles.filter(f => f.type === 'ts').length,
+              css: sourceFiles.filter(f => f.type === 'css').length,
+              html: sourceFiles.filter(f => f.type === 'html').length,
+              inline: sourceFiles.filter(f => f.inline).length,
+              external: sourceFiles.filter(f => !f.inline).length
+            }
+          }
+        }
+      };
+
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to list source files for tab ${tabId}:`, error.message);
+      }
+
+      return {
+        success: false,
+        message: `Failed to list source files for tab ${tabId}: ${error.message}`,
+        sourceFiles: {
+          tabId,
+          timestamp: new Date().toISOString(),
+          error: {
+            type: 'SourceFileError',
+            message: error.message
+          }
+        }
+      };
+    }
   }
 }
 

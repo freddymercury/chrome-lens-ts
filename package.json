@@ -59,6 +59,15 @@
         "lines": 80,
         "statements": 80
       }
+    },
+    "globals": {
+      "ts-jest": {
+        "useESM": true,
+        "tsconfig": {
+          "module": "ES2022",
+          "target": "ES2022"
+        }
+      }
     }
   }
 }
