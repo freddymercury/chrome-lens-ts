@@ -474,6 +474,9 @@ export class ChromeDevToolsMCPServer {
   
   // State watching for v1.1 live development features
   private stateWatchers: Map<string, StateWatcher> = new Map();
+  
+  // DOM agent state tracking for v1.1.1 bug fix
+  private domStates: Map<string, { enabled: boolean; enabledAt: number }> = new Map();
 
   constructor() {
     // For now, we'll initialize this as a placeholder
@@ -1345,10 +1348,22 @@ export class ChromeDevToolsMCPServer {
     this.consoleMessages.clear();
     this.networkLogs.clear();
     this.errors.clear();
+    this.domStates.clear();
     
     if (LOG_LEVEL === 'debug') {
       console.log('All storage maps cleared');
     }
+  }
+
+  /**
+   * Get tab state including DOM enablement status
+   */
+  public getTabState(tabId: string): any {
+    const domState = this.domStates.get(tabId);
+    return {
+      isDOMEnabled: domState?.enabled || false,
+      domEnabledAt: domState?.enabledAt || null
+    };
   }
 
   /**
@@ -4104,6 +4119,33 @@ export class ChromeDevToolsMCPServer {
       // Enable debugger domain to access scripts and source files
       await client.Debugger.enable();
       
+      // Enable DOM agent if needed (v1.1.1-BF1.1)
+      const domState = this.domStates.get(tabId);
+      if (!domState?.enabled) {
+        try {
+          await client.DOM.enable();
+          this.domStates.set(tabId, { enabled: true, enabledAt: Date.now() });
+          if (LOG_LEVEL === 'debug') {
+            console.log(`DOM agent enabled for tab ${tabId}`);
+          }
+        } catch (error) {
+          // DOM enable failed - return graceful error
+          return {
+            success: false,
+            message: `Failed to list source files for tab ${tabId}: DOM agent failed to enable`,
+            sourceFiles: {
+              tabId,
+              timestamp,
+              error: {
+                type: 'DOMEnableError',
+                message: `DOM agent failed to enable: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                details: error
+              }
+            }
+          };
+        }
+      }
+      
       // Enable CSS domain for stylesheets
       await client.CSS.enable();
 
@@ -4241,11 +4283,15 @@ export class ChromeDevToolsMCPServer {
 
       // Process HTML document
       if (fileTypes.includes('html')) {
+        // Use DOM.getDocument to demonstrate DOM agent usage (v1.1.1-BF1.1)
+        const domDocument = await client.DOM.getDocument({ depth: 0 });
+        
         const htmlFile: any = {
           type: 'html',
           url: pageData.documentURL,
           inline: false,
-          title: pageData.title
+          title: pageData.title,
+          domNodeId: domDocument.root.nodeId // Store DOM node ID
         };
 
         if (includeContent) {
@@ -6871,65 +6917,3 @@ export class ChromeDevToolsMCPServer {
 // Export for testing and external use
 export default ChromeDevToolsMCPServer;
 
-// Start the MCP server if this file is run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  async function startServer() {
-    try {
-      const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');
-      const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
-      const { CallToolRequestSchema, ListToolsRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
-
-      // Create our Chrome DevTools server instance
-      const chromeServer = new ChromeDevToolsMCPServer();
-      chromeServer.setupErrorHandling();
-      chromeServer.setupToolHandlers();
-
-      // Create the MCP server
-      const server = new Server(
-        {
-          name: MCP_SERVER_NAME,
-          version: MCP_SERVER_VERSION,
-        },
-        {
-          capabilities: {
-            tools: {},
-          },
-        }
-      );
-
-      // Handle list_tools requests
-      server.setRequestHandler(ListToolsRequestSchema, async () => {
-        const tools = await chromeServer.listTools();
-        return { tools };
-      });
-
-      // Handle call_tool requests
-      server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
-        const { name, arguments: args } = request.params;
-        const result = await chromeServer.callTool(name, args || {});
-        
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(result, null, 2)
-            }
-          ]
-        };
-      });
-
-      // Create transport and connect
-      const transport = new StdioServerTransport();
-      await server.connect(transport);
-      
-      if (LOG_LEVEL === 'debug') {
-        console.error(`Chrome DevTools MCP Server ${MCP_SERVER_VERSION} started`);
-      }
-    } catch (error) {
-      console.error('Failed to start MCP server:', error);
-      process.exit(1);
-    }
-  }
-
-  startServer();
-}
