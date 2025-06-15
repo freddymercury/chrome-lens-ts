@@ -28,6 +28,13 @@ This is a Chrome DevTools MCP (Model Context Protocol) Server written in TypeScr
 - Use proper TypeScript types and interfaces
 - Enable strict TypeScript compiler options
 
+### Module Format
+- **Production Build**: CommonJS format (NOT ES modules)
+- **No `"type": "module"`** in package.json
+- TypeScript compiles to CommonJS for Node.js compatibility
+- Build output uses `require`/`exports` syntax
+- This ensures MCP SDK compatibility and prevents module errors
+
 ### Test-Driven Development (TDD)
 ALL development MUST follow RED-GREEN-REFACTOR cycle:
 - **RED**: Write failing tests first that define expected behavior (in TypeScript)
@@ -86,8 +93,14 @@ npm test
 # Run TypeScript in development mode
 npm run dev
 
-# Build TypeScript (required - no JavaScript files)
+# Build TypeScript to CommonJS format
 npm run build
+
+# Production build (removes comments)
+npm run build:prod
+
+# Run built server
+npm start
 
 # Lint code
 npm run lint
