@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 /**
- * MCP Diagnostic Script
+ * MCP Diagnostic Script (ES Module version)
  * This script helps diagnose issues when the MCP server fails to start
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 console.error('=== MCP Server Diagnostic ===');
 console.error('Time:', new Date().toISOString());
@@ -40,7 +44,9 @@ filesToCheck.forEach(file => {
 
 // Try to load the package.json
 try {
-  const pkg = require('./package.json');
+  const pkgPath = path.join(__dirname, 'package.json');
+  const pkgContent = fs.readFileSync(pkgPath, 'utf-8');
+  const pkg = JSON.parse(pkgContent);
   console.error('\nPackage info:');
   console.error('- name:', pkg.name);
   console.error('- version:', pkg.version);
@@ -49,6 +55,7 @@ try {
   console.error('\nFailed to load package.json:', e.message);
 }
 
-// Now try to start the actual server
-console.error('\n=== Starting MCP Server ===');
-require('./mcp-server.js');
+// Test import without running
+console.error('\n=== Testing MCP Server Import ===');
+console.error('To start the server, run: node mcp-server.js');
+console.error('\nDiagnostic complete.');
