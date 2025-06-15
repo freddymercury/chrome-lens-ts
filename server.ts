@@ -7,6 +7,15 @@ import {
   validateJSON,
   createValidationResult
 } from './src/utils/code-validation.js';
+import {
+  calculateResponseSize,
+  createContinuationToken,
+  parseContinuationToken,
+  paginateResults,
+  filterSourceFiles,
+  sortSourceFiles,
+  createSourceFileSummary
+} from './src/utils/pagination.js';
 // @ts-ignore - Types are in types/chrome-remote-interface.d.ts
 
 // Load environment variables
@@ -864,6 +873,72 @@ export class ChromeDevToolsMCPServer {
                 enum: ['js', 'ts', 'css', 'html']
               },
               default: ['js', 'ts', 'css', 'html']
+            },
+            page: {
+              type: 'integer',
+              description: 'Page number for pagination (1-based)',
+              minimum: 1,
+              default: 1
+            },
+            pageSize: {
+              type: 'integer',
+              description: 'Number of items per page',
+              minimum: 1,
+              maximum: 1000,
+              default: 100
+            },
+            maxResponseSize: {
+              type: 'integer',
+              description: 'Maximum response size in bytes (will reduce page size if exceeded)',
+              minimum: 1000,
+              default: 500000
+            },
+            continuationToken: {
+              type: 'string',
+              description: 'Token from previous response to continue pagination'
+            },
+            filters: {
+              type: 'object',
+              description: 'Additional filters for source files',
+              properties: {
+                path: {
+                  type: 'string',
+                  description: 'Filter by path substring'
+                },
+                extension: {
+                  type: 'string',
+                  description: 'Filter by file extension (e.g., ".js")'
+                },
+                minSize: {
+                  type: 'integer',
+                  description: 'Minimum file size in bytes'
+                },
+                maxSize: {
+                  type: 'integer',
+                  description: 'Maximum file size in bytes'
+                },
+                pattern: {
+                  type: 'string',
+                  description: 'Regex pattern to match file URLs'
+                }
+              }
+            },
+            sortBy: {
+              type: 'string',
+              description: 'Sort results by criteria',
+              enum: ['url', 'size', 'type'],
+              default: 'url'
+            },
+            sortOrder: {
+              type: 'string',
+              description: 'Sort order',
+              enum: ['asc', 'desc'],
+              default: 'asc'
+            },
+            includeSummary: {
+              type: 'boolean',
+              description: 'Include summary statistics in response',
+              default: false
             }
           },
           required: ['tabId']
