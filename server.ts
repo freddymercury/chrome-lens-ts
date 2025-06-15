@@ -1,5 +1,12 @@
 import dotenv from 'dotenv';
 import CDP from 'chrome-remote-interface';
+import {
+  detectFileType,
+  getValidationStrategy,
+  validateCSS,
+  validateJSON,
+  createValidationResult
+} from './src/utils/code-validation.js';
 // @ts-ignore - Types are in types/chrome-remote-interface.d.ts
 
 // Load environment variables
@@ -890,6 +897,16 @@ export class ChromeDevToolsMCPServer {
               type: 'boolean',
               description: 'Whether to validate syntax before applying changes. When true, prevents applying changes that would cause syntax errors.',
               default: true
+            },
+            skipValidation: {
+              type: 'boolean',
+              description: 'Skip all syntax validation for runtime code execution. Useful for injecting debugging code or when modifying already-running JavaScript.',
+              default: false
+            },
+            autoDetectRuntime: {
+              type: 'boolean',
+              description: 'Automatically detect if code is meant for runtime execution (e.g., console.log, DOM manipulation) and skip TypeScript validation if so.',
+              default: false
             }
           },
           required: ['tabId', 'sourceId', 'newContent']
@@ -4791,7 +4808,15 @@ export class ChromeDevToolsMCPServer {
    * Uses Chrome DevTools Protocol to modify JavaScript/TypeScript/CSS code
    */
   public async modifySourceCode(parameters: any): Promise<any> {
-    const { tabId, sourceId, newContent, hotReload = true, validateSyntax = true } = parameters;
+    const { 
+      tabId, 
+      sourceId, 
+      newContent, 
+      hotReload = true, 
+      validateSyntax = true,
+      skipValidation = false,
+      autoDetectRuntime = false
+    } = parameters;
     
     // Check if code modification is enabled
     const codeModificationEnabled = process.env.CODE_MODIFICATION_ENABLED !== 'false';
@@ -4887,11 +4912,34 @@ export class ChromeDevToolsMCPServer {
       }
       
       // Determine file type for appropriate validation
-      const fileType = this.getFileType(sourceTarget.url);
+      const fileTypeInfo = detectFileType(sourceTarget.url);
+      const fileType = fileTypeInfo.type; // For backward compatibility
       
-      // Validate syntax if requested
-      if (validateSyntax) {
-        const validationResult = await this.validateSourceCode(client, newContent, fileType, sourceTarget);
+      // Determine validation strategy
+      const validationStrategy = getValidationStrategy(
+        newContent,
+        fileTypeInfo,
+        { skipValidation, validateSyntax, autoDetectRuntime }
+      );
+      
+      if (LOG_LEVEL === 'debug') {
+        console.log('Validation strategy:', validationStrategy, { skipValidation, validateSyntax, autoDetectRuntime });
+      }
+      
+      // Validate syntax based on strategy
+      let validationResult: any = { valid: true };
+      
+      if (validationStrategy === 'skip') {
+        validationResult = createValidationResult(true, undefined, {
+          validationSkipped: true
+        });
+      } else if (validationStrategy === 'runtime') {
+        validationResult = createValidationResult(true, undefined, {
+          runtimeCodeDetected: true
+        });
+      } else {
+        // Full validation
+        validationResult = await this.validateSourceCode(client, newContent, fileType, sourceTarget);
         if (!validationResult.valid) {
           // Check if rollback is enabled
           const rollbackEnabled = process.env.ENABLE_CODE_ROLLBACK !== 'false';
@@ -5136,7 +5184,10 @@ export class ChromeDevToolsMCPServer {
           rollbackId: originalSource ? `${tabId}-${sourceTarget.scriptId}-${Date.now()}` : undefined,
           hotReloadSystem,
           hmrBoundaries,
-          hmrDisabledReason
+          hmrDisabledReason,
+          validationSkipped: validationResult.validationSkipped,
+          runtimeCodeDetected: validationResult.runtimeCodeDetected,
+          hotReloadTriggered: actualHotReload && !reloadRequired
         }
       };
       
@@ -5459,26 +5510,8 @@ export class ChromeDevToolsMCPServer {
     }
   }
 
-  /**
-   * Get file type from URL
-   */
-  private getFileType(url: string): string {
-    // Remove query parameters and hash from URL
-    const cleanUrl = url.split('?')[0].split('#')[0];
-    
-    // Check file extensions
-    if (cleanUrl.endsWith('.js') || cleanUrl.endsWith('.mjs') || cleanUrl.endsWith('.jsx')) {
-      return 'javascript';
-    }
-    if (cleanUrl.endsWith('.ts') || cleanUrl.endsWith('.tsx')) {
-      return 'typescript';
-    }
-    if (cleanUrl.endsWith('.css')) return 'css';
-    if (cleanUrl.endsWith('.html') || cleanUrl.endsWith('.htm')) return 'html';
-    if (cleanUrl.endsWith('.json')) return 'json';
-    
-    return 'unknown';
-  }
+  // Note: getFileType is replaced by detectFileType from code-validation utils
+  // Keeping for potential backward compatibility if needed
 
   /**
    * Validate source code based on file type
@@ -5513,44 +5546,13 @@ export class ChromeDevToolsMCPServer {
       }
       
       if (fileType === 'css') {
-        // Basic CSS validation - check for common syntax errors
-        // Remove comments for validation
-        const cleanCSS = content.replace(/\/\*[\s\S]*?\*\//g, '');
-        
-        // Check for empty values
-        if (cleanCSS.match(/:\s*;/)) {
-          return {
-            valid: false,
-            error: 'CSS contains empty property values',
-            errorType: 'CSSError'
-          };
-        }
-        
-        // Check for unclosed braces
-        const openBraces = (cleanCSS.match(/{/g) || []).length;
-        const closeBraces = (cleanCSS.match(/}/g) || []).length;
-        if (openBraces !== closeBraces) {
-          return {
-            valid: false,
-            error: `CSS has ${openBraces} opening braces but ${closeBraces} closing braces`,
-            errorType: 'CSSError'
-          };
-        }
-        
-        return { valid: true };
+        const result = validateCSS(content);
+        return result.valid ? result : { ...result, errorType: 'CSSError' };
       }
       
       if (fileType === 'json') {
-        try {
-          JSON.parse(content);
-          return { valid: true };
-        } catch (error: any) {
-          return {
-            valid: false,
-            error: `JSON parse error: ${error.message}`,
-            errorType: 'JSONError'
-          };
-        }
+        const result = validateJSON(content);
+        return result.valid ? result : { ...result, errorType: 'JSONError' };
       }
       
       // For other file types, skip validation
