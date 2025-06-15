@@ -66,5 +66,6 @@ async function main() {
 
 main().catch((error) => {
   console.error('Failed to start MCP server:', error);
+  console.error('Stack trace:', error.stack);
   process.exit(1);
 });

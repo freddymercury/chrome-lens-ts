@@ -495,6 +495,9 @@ export class ChromeDevToolsMCPServer {
       },
     };
     
+    // Initialize tools
+    this.setupToolHandlers();
+    
     if (LOG_LEVEL === 'debug') {
       console.log(`Storage initialized with max size: ${MAX_STORAGE_SIZE} bytes`);
     }
