@@ -16,6 +16,14 @@ import {
   sortSourceFiles,
   createSourceFileSummary
 } from './src/utils/pagination.js';
+import {
+  createConnectionState,
+  isConnectionStale,
+  updateConnectionActivity,
+  markConnected,
+  cleanupOldData,
+  safeArrayAccess
+} from './src/utils/retry-wrapper.js';
 // @ts-ignore - Types are in types/chrome-remote-interface.d.ts
 
 // Load environment variables
@@ -499,6 +507,13 @@ export class ChromeDevToolsMCPServer {
     enabledAt: number | null;
     enablePromise?: Promise<void>;
   }> = new Map();
+  
+  // Connection states for reliability tracking
+  private connectionStates: Map<string, any> = new Map();
+  
+  // Cleanup interval for old data
+  // @ts-ignore - Used for cleanup but not directly referenced
+  private cleanupInterval: NodeJS.Timeout | null = null;
 
   constructor() {
     // For now, we'll initialize this as a placeholder
@@ -513,6 +528,11 @@ export class ChromeDevToolsMCPServer {
     
     // Initialize tools
     this.setupToolHandlers();
+    
+    // Start cleanup interval for old data (every 5 minutes)
+    this.cleanupInterval = setInterval(() => {
+      this.performDataCleanup();
+    }, 300000); // 5 minutes
     
     if (LOG_LEVEL === 'debug') {
       console.log(`Storage initialized with max size: ${MAX_STORAGE_SIZE} bytes`);
@@ -1804,11 +1824,17 @@ export class ChromeDevToolsMCPServer {
             stackTrace: event.stackTrace || null
           };
           
-          // Store console message for this tab
+          // Store console message for this tab with safe access
           if (!this.consoleMessages.has(tabId)) {
             this.consoleMessages.set(tabId, []);
           }
-          this.consoleMessages.get(tabId)!.push(consoleMessage);
+          
+          // Use safe concurrent access to prevent race conditions
+          const messages = this.consoleMessages.get(tabId)!;
+          messages.push(consoleMessage);
+          
+          // Update connection state to indicate activity
+          this.updateConnectionState(tabId);
           
           // Also store error-level messages in the errors collection for analyzeErrors
           if (consoleMessage.level === 'error') {
@@ -1971,11 +1997,17 @@ export class ChromeDevToolsMCPServer {
             referrerPolicy: event.request?.referrerPolicy || ''
           };
           
-          // Store network request for this tab
+          // Store network request for this tab with safe access
           if (!this.networkLogs.has(tabId)) {
             this.networkLogs.set(tabId, []);
           }
-          this.networkLogs.get(tabId)!.push(networkRequest);
+          
+          // Use safe concurrent access to prevent race conditions
+          const logs = this.networkLogs.get(tabId)!;
+          logs.push(networkRequest);
+          
+          // Update connection state to indicate activity
+          this.updateConnectionState(tabId);
           
           if (LOG_LEVEL === 'debug') {
             console.log(`Network request captured for tab ${tabId}:`, networkRequest.method, networkRequest.url);
@@ -2001,11 +2033,17 @@ export class ChromeDevToolsMCPServer {
             timing: event.response?.timing || null
           };
           
-          // Store network response for this tab
+          // Store network response for this tab with safe access
           if (!this.networkLogs.has(tabId)) {
             this.networkLogs.set(tabId, []);
           }
-          this.networkLogs.get(tabId)!.push(networkResponse);
+          
+          // Use safe concurrent access to prevent race conditions
+          const logs = this.networkLogs.get(tabId)!;
+          logs.push(networkResponse);
+          
+          // Update connection state to indicate activity
+          this.updateConnectionState(tabId);
           
           if (LOG_LEVEL === 'debug') {
             console.log(`Network response captured for tab ${tabId}:`, networkResponse.status, networkResponse.url);
@@ -2043,6 +2081,10 @@ export class ChromeDevToolsMCPServer {
 
       // Store client for cleanup (but don't expose it in response)
       this.clients.set(tabId, client);
+      
+      // Update connection state
+      const connectionState = this.getConnectionState(tabId);
+      this.connectionStates.set(tabId, markConnected(connectionState));
 
       return {
         success: true,
@@ -2212,8 +2254,8 @@ export class ChromeDevToolsMCPServer {
     const levelFilter = parameters.level;
 
     try {
-      // Get console messages for this tab
-      const tabMessages = this.consoleMessages.get(tabId) || [];
+      // Get console messages for this tab with safe concurrent access
+      const tabMessages = this.getConsoleMessagesSafe(tabId);
       
       if (LOG_LEVEL === 'debug') {
         console.log(`Found ${tabMessages.length} console messages for tab ${tabId}`);
@@ -2528,8 +2570,8 @@ export class ChromeDevToolsMCPServer {
     const methodFilter = parameters.method;
 
     try {
-      // Get network activity for this tab
-      const tabActivity = this.networkLogs.get(tabId) || [];
+      // Get network activity for this tab with safe concurrent access
+      const tabActivity = this.getNetworkLogsSafe(tabId);
       
       if (LOG_LEVEL === 'debug') {
         console.log(`Found ${tabActivity.length} network entries for tab ${tabId}`);
@@ -4571,6 +4613,15 @@ export class ChromeDevToolsMCPServer {
     const tabId = parameters.tabId;
     const includeContent = parameters.includeContent || false;
     const fileTypes = parameters.fileTypes || ['js', 'ts', 'css', 'html'];
+    
+    // Pagination parameters
+    const pageSize = parameters.pageSize || 100;
+    const maxResponseSize = parameters.maxResponseSize || 500000; // 500KB default
+    const continuationToken = parameters.continuationToken;
+    const filters = parameters.filters;
+    const sortBy = parameters.sortBy;
+    const sortOrder = parameters.sortOrder;
+    const includeSummary = parameters.includeSummary || false;
 
     try {
       if (LOG_LEVEL === 'debug') {
@@ -4831,31 +4882,63 @@ export class ChromeDevToolsMCPServer {
         sourceFiles.push(htmlFile);
       }
 
+      // Apply filters if provided
+      let filteredFiles = sourceFiles;
+      if (filters) {
+        filteredFiles = filterSourceFiles(sourceFiles, filters);
+      }
+      
+      // Apply sorting if provided
+      if (sortBy) {
+        filteredFiles = sortSourceFiles(filteredFiles, sortBy, sortOrder);
+      }
+      
+      // Apply pagination
+      const paginationResult = paginateResults(filteredFiles, {
+        page: continuationToken ? parseContinuationToken(continuationToken)?.page || 1 : 1,
+        pageSize,
+        maxResponseSize,
+        continuationToken
+      });
+      
+      // Calculate response size
+      const responseSize = calculateResponseSize(paginationResult.items);
+      
+      // Create continuation token if there's a next page
+      const nextToken = paginationResult.pagination.hasNextPage
+        ? createContinuationToken(tabId, paginationResult.pagination.page + 1, filters)
+        : undefined;
+      
+      // Generate summary if requested
+      let summary = undefined;
+      if (includeSummary) {
+        summary = createSourceFileSummary(sourceFiles); // Use all files for summary
+      }
+
       return {
         success: true,
-        message: `Found ${sourceFiles.length} source files in tab ${tabId}`,
+        message: `Found ${filteredFiles.length} source files in tab ${tabId} (returning ${paginationResult.items.length})`,
         sourceFiles: {
           tabId,
           timestamp,
           documentURL: pageData.documentURL,
           title: pageData.title,
-          files: sourceFiles,
-          summary: {
-            totalFiles: sourceFiles.length,
-            fileTypes: fileTypes,
-            includeContent: includeContent,
-            breakdown: {
-              javascript: sourceFiles.filter(f => f.type === 'js').length,
-              typescript: sourceFiles.filter(f => f.type === 'ts').length,
-              css: sourceFiles.filter(f => f.type === 'css').length,
-              html: sourceFiles.filter(f => f.type === 'html').length,
-              inline: sourceFiles.filter(f => f.inline).length,
-              external: sourceFiles.filter(f => !f.inline).length,
-              withScriptId: sourceFiles.filter(f => f.scriptId).length,
-              modifiable: sourceFiles.filter(f => f.scriptId && !f.inline).length
-            }
+          scriptFiles: paginationResult.items, // Changed from 'files' to 'scriptFiles' for test compatibility
+          breakdown: {
+            javascript: sourceFiles.filter(f => f.type === 'js').length,
+            typescript: sourceFiles.filter(f => f.type === 'ts').length,
+            css: sourceFiles.filter(f => f.type === 'css').length,
+            html: sourceFiles.filter(f => f.type === 'html').length,
+            inline: sourceFiles.filter(f => f.inline).length,
+            external: sourceFiles.filter(f => !f.inline).length,
+            withScriptId: sourceFiles.filter(f => f.scriptId).length,
+            modifiable: sourceFiles.filter(f => f.scriptId && !f.inline).length
           }
-        }
+        },
+        pagination: paginationResult.pagination,
+        responseSize,
+        continuationToken: nextToken,
+        summary
       };
 
     } catch (error: any) {
@@ -4912,6 +4995,29 @@ export class ChromeDevToolsMCPServer {
     }
     
     try {
+      // Validate sourceId parameter
+      if (!sourceId || typeof sourceId !== 'string' || sourceId.trim() === '') {
+        return {
+          success: false,
+          message: 'sourceId is required and must be a non-empty string',
+          error: {
+            type: 'InvalidParameter',
+            message: 'sourceId is required',
+            hint: 'Use list_source_files to discover available source files and their IDs'
+          },
+          sourceModification: {
+            tabId,
+            sourceId,
+            timestamp: new Date().toISOString(),
+            error: {
+              type: 'InvalidParameter',
+              message: 'sourceId is required and must be a non-empty string',
+              hint: 'Use list_source_files to discover available source files and their IDs'
+            }
+          }
+        };
+      }
+
       // Get the Chrome client for this tab
       const client = this.clients.get(tabId);
       if (!client) {
@@ -4934,18 +5040,60 @@ export class ChromeDevToolsMCPServer {
       // Resolve the source target
       const sourceTarget = await this.resolveSourceTarget(tabId, sourceId);
       if (!sourceTarget) {
+        // Check if there are multiple matches
+        const matches = this.findSourceMatches(tabId, sourceId);
+        
+        if (matches.length > 1) {
+          return {
+            success: false,
+            message: `Multiple sources found matching '${sourceId}'. Please be more specific.`,
+            error: {
+              type: 'AmbiguousSource',
+              message: `Multiple sources found matching '${sourceId}'`,
+              matches: matches,
+              suggestion: 'Use a more specific URL path or the exact script ID'
+            },
+            sourceModification: {
+              tabId,
+              sourceId,
+              timestamp: new Date().toISOString(),
+              error: {
+                type: 'AmbiguousSource',
+                message: `Multiple sources found matching '${sourceId}'`,
+                matches: matches,
+                suggestion: 'Use a more specific URL path or the exact script ID'
+              }
+            }
+          };
+        }
+        
+        // No matches found - provide helpful error with available sources
+        const registry = this.getSourceRegistry(tabId);
+        const availableSources = Array.from(registry.entries()).map(([scriptId, source]) => ({
+          scriptId,
+          url: source.url
+        })).slice(0, 10); // Show first 10 sources
+        
         return {
           success: false,
           message: `Source file not found: ${sourceId}`,
-          error: 'Source file not found',
+          error: {
+            type: 'SourceNotFound',
+            message: `Could not find source file matching: ${sourceId}`,
+            availableSources: availableSources,
+            totalSources: registry.size,
+            hint: 'You can use either a script ID or a URL (partial or full) to identify source files'
+          },
           sourceModification: {
             tabId,
             sourceId,
             timestamp: new Date().toISOString(),
             error: {
               type: 'SourceNotFound',
-              message: `Could not find source file matching: ${sourceId}. Use list_source_files first to get valid scriptIds.`,
-              suggestion: 'Source files must have a scriptId to be modifiable. Use list_source_files with the same tabId to see available sources.'
+              message: `Could not find source file matching: ${sourceId}`,
+              availableSources: availableSources,
+              totalSources: registry.size,
+              hint: 'You can use either a script ID or a URL (partial or full) to identify source files'
             }
           }
         };
@@ -5550,29 +5698,83 @@ export class ChromeDevToolsMCPServer {
       };
     }
     
-    // Then, try URL pattern matching
-    for (const [_scriptId, source] of registry.entries()) {
-      // Check if the sourceId appears in the URL
-      if (source.url && source.url.includes(sourceId)) {
-        return {
+    // Then, try URL pattern matching (case-insensitive)
+    const sourceIdLower = sourceId.toLowerCase();
+    const matches: any[] = [];
+    
+    for (const [scriptId, source] of registry.entries()) {
+      // Check if the sourceId appears in the URL (case-insensitive)
+      if (source.url && source.url.toLowerCase().includes(sourceIdLower)) {
+        matches.push({
           ...source,
+          scriptId,
           originalSource: !!source.originalUrl
-        };
+        });
       }
       
       // Check original source URL if available
-      if (source.originalUrl && source.originalUrl.includes(sourceId)) {
-        return {
+      if (source.originalUrl && source.originalUrl.toLowerCase().includes(sourceIdLower)) {
+        matches.push({
           ...source,
+          scriptId,
           originalSource: true
-        };
+        });
       }
+    }
+    
+    // Handle multiple matches
+    if (matches.length > 1) {
+      // Try to find exact URL match
+      const exactMatch = matches.find(m => 
+        m.url?.toLowerCase() === sourceIdLower || 
+        m.originalUrl?.toLowerCase() === sourceIdLower
+      );
+      if (exactMatch) {
+        return exactMatch;
+      }
+      
+      // Return null to trigger error with match information
+      return null;
+    }
+    
+    // Return single match if found
+    if (matches.length === 1) {
+      return matches[0];
     }
     
     // No match found
     return null;
   }
 
+  /**
+   * Find all source matches for error reporting
+   */
+  public findSourceMatches(tabId: string, sourceId: string): any[] {
+    const registry = this.getSourceRegistry(tabId);
+    const sourceIdLower = sourceId.toLowerCase();
+    const matches: any[] = [];
+    
+    for (const [scriptId, source] of registry.entries()) {
+      if (source.url && source.url.toLowerCase().includes(sourceIdLower)) {
+        matches.push({
+          scriptId,
+          url: source.url,
+          type: 'url'
+        });
+      }
+      
+      if (source.originalUrl && source.originalUrl.toLowerCase().includes(sourceIdLower)) {
+        matches.push({
+          scriptId,
+          url: source.originalUrl,
+          type: 'originalUrl'
+        });
+      }
+    }
+    
+    return matches;
+  }
+  
   /**
    * Clean up source registry for a tab
    */
@@ -7697,6 +7899,81 @@ export class ChromeDevToolsMCPServer {
         }
       };
     }
+  }
+  
+  /**
+   * Perform periodic cleanup of old data
+   */
+  private performDataCleanup(): void {
+    try {
+      const maxAge = 3600000; // 1 hour
+      
+      // Clean up old console messages, network logs, and errors
+      cleanupOldData([this.consoleMessages, this.networkLogs, this.errors], maxAge);
+      
+      // Clean up stale connection states
+      for (const [tabId, state] of this.connectionStates.entries()) {
+        if (isConnectionStale(state, maxAge)) {
+          this.connectionStates.delete(tabId);
+          
+          // Also clean up related data
+          this.clients.delete(tabId);
+          this.consoleMessages.delete(tabId);
+          this.networkLogs.delete(tabId);
+          this.errors.delete(tabId);
+          this.sourceFiles.delete(tabId);
+          this.breakpoints.delete(tabId);
+          this.debuggerStates.delete(tabId);
+          this.eventMonitors.delete(tabId);
+          this.stateWatchers.delete(tabId);
+          this.domStates.delete(tabId);
+          
+          if (LOG_LEVEL === 'debug') {
+            console.log(`Cleaned up stale data for tab ${tabId}`);
+          }
+        }
+      }
+      
+      if (LOG_LEVEL === 'debug') {
+        console.log('Data cleanup completed');
+      }
+    } catch (error: any) {
+      console.error('Error during data cleanup:', error);
+    }
+  }
+  
+  /**
+   * Get connection state for a tab
+   */
+  private getConnectionState(tabId: string): any {
+    if (!this.connectionStates.has(tabId)) {
+      this.connectionStates.set(tabId, createConnectionState(tabId));
+    }
+    return this.connectionStates.get(tabId)!;
+  }
+  
+  /**
+   * Update connection state when activity occurs
+   */
+  private updateConnectionState(tabId: string): void {
+    const state = this.getConnectionState(tabId);
+    this.connectionStates.set(tabId, updateConnectionActivity(state));
+  }
+  
+  /**
+   * Safe access to console messages with concurrent read protection
+   */
+  private getConsoleMessagesSafe(tabId: string): any[] {
+    const messages = this.consoleMessages.get(tabId) || [];
+    return safeArrayAccess(messages, (items) => [...items]);
+  }
+  
+  /**
+   * Safe access to network logs with concurrent read protection
+   */
+  private getNetworkLogsSafe(tabId: string): any[] {
+    const logs = this.networkLogs.get(tabId) || [];
+    return safeArrayAccess(logs, (items) => [...items]);
   }
 }
 
