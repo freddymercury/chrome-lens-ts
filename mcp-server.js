@@ -64,6 +64,18 @@ async function main() {
   }
 }
 
+// Handle process errors
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+// Start the server
 main().catch((error) => {
   console.error('Failed to start MCP server:', error);
   console.error('Stack trace:', error.stack);

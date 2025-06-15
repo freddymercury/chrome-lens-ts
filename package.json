@@ -11,7 +11,10 @@
     "test": "jest",
     "lint": "eslint *.ts tests/**/*.ts",
     "typecheck": "tsc --noEmit",
-    "start": "node mcp-server.js"
+    "start": "node mcp-server.js",
+    "start:diagnostic": "node mcp-diagnostic.js",
+    "start:launcher": "node mcp-launcher.js",
+    "start:direct": "node --experimental-modules mcp-server.js"
   },
   "keywords": [
     "mcp",
