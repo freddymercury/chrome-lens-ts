@@ -1373,6 +1373,32 @@ export class ChromeDevToolsMCPServer {
   }
 
   /**
+   * Add an error to the error history with circular buffer enforcement
+   */
+  private addErrorToHistory(tabId: string, error: any): void {
+    if (!this.errors.has(tabId)) {
+      this.errors.set(tabId, []);
+    }
+    
+    const errorHistory = this.errors.get(tabId)!;
+    const maxHistory = parseInt(process.env.MAX_ERROR_HISTORY || '1000', 10);
+    
+    // Add the new error
+    errorHistory.push(error);
+    
+    // Enforce circular buffer limit
+    if (errorHistory.length > maxHistory) {
+      // Remove oldest errors to maintain the limit
+      const excess = errorHistory.length - maxHistory;
+      errorHistory.splice(0, excess);
+    }
+    
+    if (LOG_LEVEL === 'debug') {
+      console.log(`Error added to history for tab ${tabId}. Total errors: ${errorHistory.length}`);
+    }
+  }
+
+  /**
    * Connect to Chrome DevTools instance
    * Performs basic CDP.List() call to test Chrome connection
    */
@@ -1635,10 +1661,7 @@ export class ChromeDevToolsMCPServer {
           
           // Also store error-level messages in the errors collection for analyzeErrors
           if (consoleMessage.level === 'error') {
-            if (!this.errors.has(tabId)) {
-              this.errors.set(tabId, []);
-            }
-            this.errors.get(tabId)!.push({
+            this.addErrorToHistory(tabId, {
               type: 'runtime',
               message: consoleMessage.text,
               timestamp: new Date(consoleMessage.timestamp).toISOString(),
@@ -1659,13 +1682,10 @@ export class ChromeDevToolsMCPServer {
         // Also listen for runtime exceptions
         client.Runtime.on('exceptionThrown', (event: any) => {
           const exception = event.exceptionDetails;
-          if (!this.errors.has(tabId)) {
-            this.errors.set(tabId, []);
-          }
-          this.errors.get(tabId)!.push({
+          this.addErrorToHistory(tabId, {
             type: 'runtime',
             message: exception.text || 'Unknown exception',
-            timestamp: new Date(event.timestamp || Date.now()).toISOString(),
+            timestamp: new Date(event.timestamp * 1000 || Date.now()).toISOString(),
             source: 'exception',
             url: exception.url || 'unknown',
             lineNumber: exception.lineNumber,
@@ -2091,6 +2111,120 @@ export class ChromeDevToolsMCPServer {
           messages: [],
           error: error.message
         }
+      };
+    }
+  }
+
+  /**
+   * Get error history from a specific Chrome tab
+   * Returns stored errors with timestamps and metadata
+   */
+  public async getErrorHistory(parameters: any): Promise<any> {
+    if (LOG_LEVEL === 'debug') {
+      console.log('Getting error history for tab:', parameters);
+    }
+
+    // Validate tabId parameter
+    if (!parameters.tabId || typeof parameters.tabId !== 'string' || parameters.tabId.trim() === '') {
+      throw new Error('Tab ID is required and must be a non-empty string');
+    }
+
+    // Tab ID should be a 32-character hex string (Chrome tab ID format)
+    if (!/^[A-F0-9]{32}$/i.test(parameters.tabId)) {
+      throw new Error(`Invalid tab ID format: ${parameters.tabId}. Tab ID must be a 32-character hexadecimal string.`);
+    }
+
+    const tabId = parameters.tabId;
+    const since = parameters.since; // Timestamp in milliseconds
+
+    try {
+      // Get error history for this tab
+      const tabErrors = this.errors.get(tabId) || [];
+      
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Found ${tabErrors.length} errors for tab ${tabId}`);
+      }
+
+      // Apply time-based filtering if requested
+      let filteredErrors = tabErrors;
+      if (since !== undefined) {
+        const sinceTimestamp = new Date(since).toISOString();
+        filteredErrors = tabErrors.filter((error: any) => {
+          const errorTime = new Date(error.timestamp).getTime();
+          return errorTime >= since;
+        });
+        
+        if (LOG_LEVEL === 'debug') {
+          console.log(`Filtered to ${filteredErrors.length} errors since ${sinceTimestamp}`);
+        }
+      }
+
+      // Sort by timestamp (oldest first for consistent ordering)
+      filteredErrors.sort((a: any, b: any) => {
+        const timeA = new Date(a.timestamp).getTime();
+        const timeB = new Date(b.timestamp).getTime();
+        return timeA - timeB;
+      });
+
+      // Calculate summary statistics
+      const summary: any = {
+        total: filteredErrors.length,
+        byType: {},
+        bySource: {}
+      };
+
+      // Count errors by type and source
+      for (const error of filteredErrors) {
+        // Extract error type from message
+        const typeMatch = error.message.match(/^(\w+Error):/);
+        const errorType = typeMatch ? typeMatch[1] : 'Error';
+        
+        summary.byType[errorType] = (summary.byType[errorType] || 0) + 1;
+        summary.bySource[error.source || 'unknown'] = (summary.bySource[error.source || 'unknown'] || 0) + 1;
+      }
+
+      // Format errors with metadata
+      const formattedErrors = filteredErrors.map((error: any) => ({
+        message: error.message,
+        timestamp: error.timestamp,
+        source: error.source,
+        metadata: {
+          url: error.url,
+          lineNumber: error.lineNumber,
+          columnNumber: error.columnNumber,
+          scriptId: error.scriptId,
+          executionContextId: error.executionContextId
+        },
+        stackTrace: error.stackTrace
+      }));
+
+      return {
+        success: true,
+        message: filteredErrors.length > 0 
+          ? `Retrieved ${filteredErrors.length} errors from tab ${tabId}`
+          : `No errors recorded for tab ${tabId}`,
+        errors: formattedErrors,
+        summary,
+        filters: {
+          since: since ? new Date(since).toISOString() : null
+        }
+      };
+
+    } catch (error: any) {
+      if (LOG_LEVEL === 'debug') {
+        console.log(`Failed to get error history for tab ${tabId}:`, error.message);
+      }
+
+      return {
+        success: false,
+        message: `Failed to get error history from tab ${tabId}: ${error.message}`,
+        errors: [],
+        summary: {
+          total: 0,
+          byType: {},
+          bySource: {}
+        },
+        error: error.message
       };
     }
   }
