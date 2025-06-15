@@ -5,8 +5,9 @@
     "rootDir": "./",
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "module": "commonjs",
-    "moduleResolution": "node"
+    "module": "ES2022",
+    "moduleResolution": "node",
+    "allowSyntheticDefaultImports": true
   },
   "include": [
     "server.ts"

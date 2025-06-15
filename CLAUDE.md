@@ -29,11 +29,11 @@ This is a Chrome DevTools MCP (Model Context Protocol) Server written in TypeScr
 - Enable strict TypeScript compiler options
 
 ### Module Format
-- **Production Build**: CommonJS format (NOT ES modules)
-- **No `"type": "module"`** in package.json
-- TypeScript compiles to CommonJS for Node.js compatibility
-- Build output uses `require`/`exports` syntax
-- This ensures MCP SDK compatibility and prevents module errors
+- **Production Build**: ES modules format (ES2022)
+- **`"type": "module"`** must be in package.json
+- TypeScript compiles to ES2022 modules for MCP SDK compatibility
+- Build output uses ES module syntax (`import`/`export`)
+- The MCP SDK requires ES modules and will not work with CommonJS
 
 ### Test-Driven Development (TDD)
 ALL development MUST follow RED-GREEN-REFACTOR cycle:

@@ -2,6 +2,7 @@
   "name": "chrome-lens-ts",
   "version": "0.1.0",
   "description": "Chrome DevTools MCP Server - Direct access to Chrome's DevTools Protocol for granular real-time debugging",
+  "type": "module",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -10,7 +11,7 @@
     "test": "jest",
     "lint": "eslint *.ts tests/**/*.ts",
     "typecheck": "tsc --noEmit",
-    "start": "node dist/server.js"
+    "start": "node mcp-server.js"
   },
   "keywords": [
     "mcp",

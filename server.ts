@@ -1,4 +1,4 @@
-import * as dotenv from 'dotenv';
+import dotenv from 'dotenv';
 import CDP from 'chrome-remote-interface';
 // @ts-ignore - Types are in types/chrome-remote-interface.d.ts
 
