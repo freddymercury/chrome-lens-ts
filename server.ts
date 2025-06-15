@@ -1374,6 +1374,53 @@ export class ChromeDevToolsMCPServer {
   }
 
   /**
+   * Categorize an error based on its message and type
+   */
+  private categorizeError(errorMessage: string): { category: string; errorType: string } {
+    // Extract error type from message
+    const typeMatch = errorMessage.match(/^(\w+Error):/);
+    const errorType = typeMatch ? typeMatch[1] : 'Error';
+    
+    // Security errors
+    if (errorMessage.includes('CORS policy') || errorMessage.includes('Cross-Origin')) {
+      return { category: 'security', errorType: 'CORSError' };
+    }
+    if (errorMessage.includes('Content Security Policy') || errorMessage.includes('CSP')) {
+      return { category: 'security', errorType: 'CSPError' };
+    }
+    if (errorMessage.includes('Mixed Content')) {
+      return { category: 'security', errorType: 'MixedContentError' };
+    }
+    
+    // Network errors
+    if (errorMessage.includes('Failed to load resource') || 
+        errorMessage.includes('Failed to fetch') ||
+        errorMessage.includes('net::ERR_') ||
+        errorMessage.includes('NetworkError')) {
+      return { category: 'network', errorType: 'NetworkError' };
+    }
+    
+    // Async errors
+    if (errorMessage.includes('[Unhandled Promise Rejection]')) {
+      return { category: 'async', errorType: 'UnhandledPromiseRejection' };
+    }
+    
+    // Runtime errors (standard JavaScript errors)
+    const runtimeErrors = ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'URIError', 'EvalError'];
+    if (runtimeErrors.includes(errorType)) {
+      return { category: 'runtime', errorType };
+    }
+    
+    // Custom errors (application-specific)
+    if (errorType.endsWith('Error') && !runtimeErrors.includes(errorType) && errorType !== 'Error') {
+      return { category: 'custom', errorType };
+    }
+    
+    // Unknown/uncategorized
+    return { category: 'unknown', errorType };
+  }
+
+  /**
    * Add an error to the error history with circular buffer enforcement
    */
   private addErrorToHistory(tabId: string, error: any): void {
@@ -1381,11 +1428,19 @@ export class ChromeDevToolsMCPServer {
       this.errors.set(tabId, []);
     }
     
+    // Add categorization to the error
+    const categorization = this.categorizeError(error.message);
+    const categorizedError = {
+      ...error,
+      category: categorization.category,
+      errorType: categorization.errorType
+    };
+    
     const errorHistory = this.errors.get(tabId)!;
     const maxHistory = parseInt(process.env.MAX_ERROR_HISTORY || '1000', 10);
     
     // Add the new error
-    errorHistory.push(error);
+    errorHistory.push(categorizedError);
     
     // Enforce circular buffer limit
     if (errorHistory.length > maxHistory) {
@@ -2148,6 +2203,7 @@ export class ChromeDevToolsMCPServer {
 
     const tabId = parameters.tabId;
     const since = parameters.since; // Timestamp in milliseconds
+    const category = parameters.category; // Category filter
 
     try {
       // Get error history for this tab
@@ -2157,11 +2213,22 @@ export class ChromeDevToolsMCPServer {
         console.log(`Found ${tabErrors.length} errors for tab ${tabId}`);
       }
 
-      // Apply time-based filtering if requested
+      // Apply filters
       let filteredErrors = tabErrors;
+      
+      // Apply category filter if requested
+      if (category !== undefined) {
+        filteredErrors = filteredErrors.filter((error: any) => error.category === category);
+        
+        if (LOG_LEVEL === 'debug') {
+          console.log(`Filtered to ${filteredErrors.length} errors with category ${category}`);
+        }
+      }
+      
+      // Apply time-based filtering if requested
       if (since !== undefined) {
         const sinceTimestamp = new Date(since).toISOString();
-        filteredErrors = tabErrors.filter((error: any) => {
+        filteredErrors = filteredErrors.filter((error: any) => {
           const errorTime = new Date(error.timestamp).getTime();
           return errorTime >= since;
         });
@@ -2182,17 +2249,21 @@ export class ChromeDevToolsMCPServer {
       const summary: any = {
         total: filteredErrors.length,
         byType: {},
-        bySource: {}
+        bySource: {},
+        byCategory: {}
       };
 
-      // Count errors by type and source
+      // Count errors by type, source, and category
       for (const error of filteredErrors) {
-        // Extract error type from message
-        const typeMatch = error.message.match(/^(\w+Error):/);
-        const errorType = typeMatch ? typeMatch[1] : 'Error';
+        // Use errorType if already categorized, otherwise extract from message
+        const errorType = error.errorType || (() => {
+          const typeMatch = error.message.match(/^(\w+Error):/);
+          return typeMatch ? typeMatch[1] : 'Error';
+        })();
         
         summary.byType[errorType] = (summary.byType[errorType] || 0) + 1;
         summary.bySource[error.source || 'unknown'] = (summary.bySource[error.source || 'unknown'] || 0) + 1;
+        summary.byCategory[error.category || 'unknown'] = (summary.byCategory[error.category || 'unknown'] || 0) + 1;
       }
 
       // Format errors with metadata and optionally map source locations
@@ -2201,6 +2272,8 @@ export class ChromeDevToolsMCPServer {
           message: error.message,
           timestamp: error.timestamp,
           source: error.source,
+          category: error.category,
+          errorType: error.errorType,
           metadata: error.metadata || {
             url: error.url,
             lineNumber: error.lineNumber,
@@ -2289,7 +2362,8 @@ export class ChromeDevToolsMCPServer {
         errors: formattedErrors,
         summary,
         filters: {
-          since: since ? new Date(since).toISOString() : null
+          since: since ? new Date(since).toISOString() : null,
+          category: category || null
         }
       };
 
@@ -2305,7 +2379,8 @@ export class ChromeDevToolsMCPServer {
         summary: {
           total: 0,
           byType: {},
-          bySource: {}
+          bySource: {},
+          byCategory: {}
         },
         error: error.message
       };
