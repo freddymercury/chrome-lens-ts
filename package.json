@@ -5,8 +5,8 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc",
-    "build:prod": "tsc server.ts --outDir dist --declaration --declarationMap --sourceMap --module node16 --target es2022 --skipLibCheck",
+    "build": "tsc -p tsconfig.build.json",
+    "build:prod": "tsc -p tsconfig.build.json --removeComments",
     "dev": "ts-node server.ts",
     "test": "jest",
     "lint": "eslint *.ts tests/**/*.ts",
