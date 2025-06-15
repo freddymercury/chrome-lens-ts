@@ -69,6 +69,18 @@ chrome.exe --remote-debugging-port=9222 --user-data-dir=c:\temp\chrome-debug
 
 Verify Chrome debugging is working by visiting http://localhost:9222 in a browser.
 
+## Critical Implementation Notes
+
+### Tool Initialization
+- **IMPORTANT**: The `setupToolHandlers()` method MUST be called in the constructor
+- Without this call, the tools array will be empty and the MCP server will report 0 tools
+- This was a critical bug that prevented the server from working
+
+### Node.js Compatibility
+- The server requires Node.js 22.x as specified in .nvmrc
+- However, it can run on Node.js 18.x+ with ES module support
+- Claude Code may use an older Node.js version, but the ES modules configuration allows compatibility
+
 ## MCP Tools Architecture
 
 The server implements these core tools:
