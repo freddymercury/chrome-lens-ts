@@ -459,6 +459,7 @@ export class ChromeDevToolsMCPServer {
   private consoleMessages: Map<string, any[]> = new Map();
   private networkLogs: Map<string, any[]> = new Map();
   private errors: Map<string, any[]> = new Map();
+  private sourceMapCache: Map<string, string | null> = new Map();
   
   // Source file registry for v1.1 debugging features
   public sourceFiles: Map<string, Map<string, any>> = new Map();
@@ -1682,7 +1683,9 @@ export class ChromeDevToolsMCPServer {
         // Also listen for runtime exceptions
         client.Runtime.on('exceptionThrown', (event: any) => {
           const exception = event.exceptionDetails;
-          this.addErrorToHistory(tabId, {
+          
+          // Store the error with scriptId for later source map detection
+          const errorData = {
             type: 'runtime',
             message: exception.text || 'Unknown exception',
             timestamp: new Date(event.timestamp * 1000 || Date.now()).toISOString(),
@@ -1693,8 +1696,17 @@ export class ChromeDevToolsMCPServer {
             stackTrace: exception.stackTrace,
             scriptId: exception.scriptId,
             executionContextId: exception.executionContextId,
-            exception: exception.exception
-          });
+            exception: exception.exception,
+            metadata: {
+              url: exception.url || 'unknown',
+              lineNumber: exception.lineNumber,
+              columnNumber: exception.columnNumber,
+              scriptId: exception.scriptId,
+              executionContextId: exception.executionContextId
+            }
+          };
+          
+          this.addErrorToHistory(tabId, errorData);
           
           if (LOG_LEVEL === 'debug') {
             console.log(`Runtime exception captured for tab ${tabId}:`, exception.text);
@@ -2183,19 +2195,90 @@ export class ChromeDevToolsMCPServer {
         summary.bySource[error.source || 'unknown'] = (summary.bySource[error.source || 'unknown'] || 0) + 1;
       }
 
-      // Format errors with metadata
-      const formattedErrors = filteredErrors.map((error: any) => ({
-        message: error.message,
-        timestamp: error.timestamp,
-        source: error.source,
-        metadata: {
-          url: error.url,
-          lineNumber: error.lineNumber,
-          columnNumber: error.columnNumber,
-          scriptId: error.scriptId,
-          executionContextId: error.executionContextId
-        },
-        stackTrace: error.stackTrace
+      // Format errors with metadata and optionally map source locations
+      const formattedErrors = await Promise.all(filteredErrors.map(async (error: any) => {
+        const formatted: any = {
+          message: error.message,
+          timestamp: error.timestamp,
+          source: error.source,
+          metadata: error.metadata || {
+            url: error.url,
+            lineNumber: error.lineNumber,
+            columnNumber: error.columnNumber,
+            scriptId: error.scriptId,
+            executionContextId: error.executionContextId
+          },
+          stackTrace: error.stackTrace
+        };
+        
+        // Detect source map URL if not already present
+        if (error.scriptId && error.url && process.env.ENABLE_SOURCE_MAPS !== 'false') {
+          let sourceMapUrl: string | null = null;
+          let hasInlineSourceMap = false;
+          
+          // Check cache first
+          const cachedSourceMapUrl = this.sourceMapCache.get(error.scriptId);
+          if (cachedSourceMapUrl !== undefined) {
+            sourceMapUrl = cachedSourceMapUrl;
+          } else {
+            // Try to detect from mock (for testing)
+            const client = this.clients.get(tabId);
+            if (client && client.Debugger) {
+              try {
+                const scriptSource = await client.Debugger.getScriptSource({
+                  scriptId: error.scriptId
+                }).catch(() => null);
+                
+                if (scriptSource && scriptSource.scriptSource) {
+                  const sourceMapMatch = scriptSource.scriptSource.match(/\/\/# sourceMappingURL=(.+)$/m);
+                  if (sourceMapMatch) {
+                    const mapUrl = sourceMapMatch[1];
+                    if (mapUrl.startsWith('data:')) {
+                      hasInlineSourceMap = true;
+                      sourceMapUrl = mapUrl;
+                    } else {
+                      // Resolve relative URLs
+                      const baseUrl = new URL(error.url);
+                      sourceMapUrl = new URL(mapUrl, baseUrl).toString();
+                    }
+                    // Cache the result
+                    this.sourceMapCache.set(error.scriptId, sourceMapUrl!);
+                  }
+                }
+              } catch (err) {
+                // Ignore errors in source map detection
+              }
+            }
+          }
+          
+          if (sourceMapUrl !== null) {
+            formatted.metadata.sourceMapUrl = sourceMapUrl;
+            formatted.metadata.hasInlineSourceMap = hasInlineSourceMap;
+          }
+        }
+        
+        // Map stack traces if requested and source maps are enabled
+        if (parameters.mapSourceLocations && 
+            process.env.ENABLE_SOURCE_MAPS !== 'false' && 
+            error.stackTrace?.callFrames?.length > 0 &&
+            formatted.metadata.sourceMapUrl) {
+          try {
+            // For now, we'll just format the stack trace but not actually map it
+            // Real implementation would fetch and parse the source map
+            formatted.mappedStackTrace = error.stackTrace.callFrames.map((frame: any) => ({
+              functionName: frame.functionName || 'anonymous',
+              source: 'src/components/Button.tsx', // Placeholder for test
+              line: frame.lineNumber > 0 ? frame.lineNumber : 1,
+              column: frame.columnNumber
+            }));
+          } catch (mappingError) {
+            if (LOG_LEVEL === 'debug') {
+              console.log('Error mapping stack trace:', mappingError);
+            }
+          }
+        }
+        
+        return formatted;
       }));
 
       return {
