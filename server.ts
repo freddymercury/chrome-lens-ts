@@ -1301,6 +1301,51 @@ export class ChromeDevToolsMCPServer {
           },
           required: ['tabId', 'expressions']
         }
+      },
+      {
+        name: 'suggest_debugging_strategy',
+        description: 'AI-driven debugging workflow suggestions based on problem description and context. Analyzes the debugging scenario and recommends optimal strategies.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            problemDescription: {
+              type: 'string',
+              description: 'Detailed description of the debugging problem or issue being investigated'
+            },
+            tabId: {
+              type: 'string',
+              description: 'Chrome tab ID for context-aware suggestions',
+              pattern: '^[A-F0-9]{32}$'
+            },
+            strategyType: {
+              type: 'string',
+              enum: ['step-by-step', 'exploratory', 'targeted'],
+              default: 'step-by-step',
+              description: 'Preferred debugging strategy approach: step-by-step (methodical), exploratory (broad investigation), or targeted (specific focus)'
+            },
+            confidence: {
+              type: 'number',
+              minimum: 0,
+              maximum: 1,
+              default: 0.7,
+              description: 'Minimum confidence threshold for suggested strategies (0-1)'
+            },
+            maxSteps: {
+              type: 'number',
+              minimum: 1,
+              maximum: parseInt(process.env.WORKFLOW_COMPLEXITY_LIMIT || '10'),
+              default: 5,
+              description: 'Maximum number of steps in the debugging strategy'
+            },
+            includeHistory: {
+              type: 'boolean',
+              default: false,
+              description: 'Include historical debugging data in strategy generation'
+            }
+          },
+          required: ['problemDescription'],
+          additionalProperties: false
+        }
       }
     ];
     
