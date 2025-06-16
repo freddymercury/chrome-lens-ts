@@ -1441,6 +1441,9 @@ export class ChromeDevToolsMCPServer {
       case 'watch_state_changes':
         return await this.watchStateChanges(parameters);
       
+      case 'suggest_debugging_strategy':
+        return await this.suggestDebuggingStrategy(parameters);
+      
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
     }
@@ -8019,6 +8022,337 @@ export class ChromeDevToolsMCPServer {
   private getNetworkLogsSafe(tabId: string): any[] {
     const logs = this.networkLogs.get(tabId) || [];
     return safeArrayAccess(logs, (items) => [...items]);
+  }
+
+  /**
+   * Suggest debugging strategy based on problem description
+   * Implements AI-driven debugging workflow generation
+   */
+  public async suggestDebuggingStrategy(parameters: any): Promise<any> {
+    const {
+      problemDescription,
+      tabId,
+      strategyType = 'step-by-step',
+      confidence = 0.7,
+      maxSteps = 5
+    } = parameters;
+
+    if (!problemDescription) {
+      throw new Error('problemDescription is required');
+    }
+
+    const analysisDepth = parseInt(process.env.PROBLEM_ANALYSIS_DEPTH || '3');
+    
+    // Analyze the problem description to categorize the issue
+    const problemCategory = this.categorizeProblem(problemDescription);
+    const problemConfidence = this.calculateProblemConfidence(problemDescription);
+    
+    // Generate debugging steps based on problem analysis
+    const steps = this.generateDebuggingSteps(
+      problemCategory,
+      strategyType,
+      maxSteps,
+      tabId
+    );
+    
+    // Build the strategy response
+    // If user requested higher confidence than what we calculated, use requested confidence
+    const finalConfidence = confidence > problemConfidence ? confidence : problemConfidence;
+    
+    const strategy = {
+      strategy: `${strategyType} debugging strategy for ${problemCategory}`,
+      problemCategory,
+      steps,
+      confidence: Math.min(finalConfidence, 1.0),
+      analysisDepth,
+      contextUsed: !!tabId,
+      alternativeStrategies: this.getAlternativeStrategies(problemCategory)
+    };
+    
+    if (LOG_LEVEL === 'debug') {
+      console.log(`Generated debugging strategy for: ${problemDescription}`);
+      console.log(`Category: ${problemCategory}, Confidence: ${problemConfidence}`);
+    }
+    
+    return strategy;
+  }
+  
+  /**
+   * Categorize the problem based on description patterns
+   */
+  private categorizeProblem(description: string): string {
+    const lowerDesc = description.toLowerCase();
+    
+    // Error pattern matching
+    if (lowerDesc.includes('typeerror') || lowerDesc.includes('cannot read property') || 
+        lowerDesc.includes('undefined') || lowerDesc.includes('null')) {
+      return 'null-reference';
+    }
+    
+    if (lowerDesc.includes('referenceerror') || lowerDesc.includes('is not defined')) {
+      return 'undefined-variable';
+    }
+    
+    if (lowerDesc.includes('syntaxerror') || lowerDesc.includes('unexpected token')) {
+      return 'syntax-error';
+    }
+    
+    if (lowerDesc.includes('network') || lowerDesc.includes('404') || 
+        lowerDesc.includes('api') || lowerDesc.includes('fetch')) {
+      return 'network-error';
+    }
+    
+    if (lowerDesc.includes('memory') || lowerDesc.includes('leak') || 
+        lowerDesc.includes('performance') || lowerDesc.includes('slow')) {
+      return 'performance-issue';
+    }
+    
+    if (lowerDesc.includes('click') || lowerDesc.includes('submit') || 
+        lowerDesc.includes('form') || lowerDesc.includes('button')) {
+      return 'ui-interaction';
+    }
+    
+    if (lowerDesc.includes('crash') || lowerDesc.includes('freeze') || 
+        lowerDesc.includes('hang')) {
+      return 'application-crash';
+    }
+    
+    // Default to generic issue
+    return 'generic-issue';
+  }
+  
+  /**
+   * Calculate confidence based on problem description specificity
+   */
+  private calculateProblemConfidence(description: string): number {
+    let confidence = 0.5; // Base confidence
+    
+    // Increase confidence for specific error messages
+    if (description.match(/Error:|TypeError:|ReferenceError:|SyntaxError:/)) {
+      confidence += 0.2;
+    }
+    
+    // Increase for specific details
+    if (description.match(/line \d+|column \d+/)) {
+      confidence += 0.1;
+    }
+    
+    if (description.match(/\/.+\.(js|ts|jsx|tsx)/)) {
+      confidence += 0.1;
+    }
+    
+    // Increase for specific API/endpoint mentions
+    if (description.match(/\/\w+|endpoint|API|url|http/i)) {
+      confidence += 0.15;
+    }
+    
+    // Increase for specific timing information
+    if (description.match(/\d+\s*(seconds?|ms|milliseconds?)/i)) {
+      confidence += 0.1;
+    }
+    
+    // Decrease for vague descriptions
+    if (description.match(/something|wrong|issue|problem/i) && description.length < 50) {
+      confidence -= 0.2;
+    }
+    
+    // Extra decrease for very vague descriptions
+    if (description.toLowerCase() === 'something is slow' || 
+        description.toLowerCase() === 'something is wrong') {
+      confidence -= 0.1;
+    }
+    
+    return Math.max(0.3, Math.min(confidence, 0.95));
+  }
+  
+  /**
+   * Generate debugging steps based on problem category and strategy type
+   */
+  private generateDebuggingSteps(
+    category: string, 
+    strategyType: string, 
+    maxSteps: number,
+    tabId?: string
+  ): any[] {
+    const steps: any[] = [];
+    let stepNumber = 1;
+    
+    // Common first step - gather initial information
+    if (strategyType === 'exploratory' || category === 'generic-issue') {
+      steps.push({
+        step: stepNumber++,
+        action: 'Gather console messages and errors',
+        tool: 'get_console_messages',
+        description: 'Collect all console output to identify error messages',
+        parameters: tabId ? { tabId, limit: 100 } : {}
+      });
+      
+      steps.push({
+        step: stepNumber++,
+        action: 'Analyze runtime errors',
+        tool: 'analyze_errors',
+        description: 'Get comprehensive error analysis with stack traces',
+        parameters: tabId ? { tabId, errorType: 'all' } : {},
+        dependsOn: stepNumber - 2
+      });
+      
+      // Add extra steps for exploratory strategy
+      if (strategyType === 'exploratory') {
+        steps.push({
+          step: stepNumber++,
+          action: 'Check network activity',
+          tool: 'get_network_activity',
+          description: 'Review all network requests for failures',
+          parameters: tabId ? { tabId } : {}
+        });
+        
+        steps.push({
+          step: stepNumber++,
+          action: 'Monitor DOM events',
+          tool: 'monitor_events',
+          description: 'Track DOM mutations and user interactions',
+          parameters: tabId ? { tabId, eventTypes: ['dom'] } : {}
+        });
+      }
+    }
+    
+    // Category-specific steps
+    switch (category) {
+      case 'null-reference':
+      case 'undefined-variable':
+        steps.push({
+          step: stepNumber++,
+          action: 'Inspect variable state',
+          tool: 'inspect_variables',
+          description: 'Check variable values and object properties',
+          parameters: tabId ? { tabId, expression: 'window' } : {}
+        });
+        
+        steps.push({
+          step: stepNumber++,
+          action: 'Set breakpoint at error location',
+          tool: 'manage_breakpoints',
+          description: 'Add breakpoint to pause before the error occurs',
+          parameters: tabId ? { tabId, operation: 'set' } : {},
+          dependsOn: stepNumber - 2
+        });
+        break;
+        
+      case 'network-error':
+        steps.push({
+          step: stepNumber++,
+          action: 'Check network activity',
+          tool: 'get_network_activity',
+          description: 'Review failed network requests',
+          parameters: tabId ? { tabId, type: 'request' } : {}
+        });
+        
+        steps.push({
+          step: stepNumber++,
+          action: 'Analyze request details',
+          tool: 'execute_js',
+          description: 'Inspect request headers and payloads',
+          parameters: tabId ? { tabId, expression: 'fetch.toString()' } : {},
+          dependsOn: stepNumber - 2
+        });
+        break;
+        
+      case 'performance-issue':
+        steps.push({
+          step: stepNumber++,
+          action: 'Get performance metrics',
+          tool: 'get_performance_metrics',
+          description: 'Analyze page performance and Core Web Vitals',
+          parameters: tabId ? { tabId } : {}
+        });
+        
+        steps.push({
+          step: stepNumber++,
+          action: 'Analyze runtime state',
+          tool: 'analyze_runtime_state',
+          description: 'Check memory usage and heap analysis',
+          parameters: tabId ? { tabId, scope: 'all' } : {},
+          dependsOn: stepNumber - 2
+        });
+        break;
+        
+      case 'ui-interaction':
+        steps.push({
+          step: stepNumber++,
+          action: 'Monitor DOM events',
+          tool: 'monitor_events',
+          description: 'Track user interaction events',
+          parameters: tabId ? { tabId, eventTypes: ['dom'] } : {}
+        });
+        
+        steps.push({
+          step: stepNumber++,
+          action: 'Execute test interaction',
+          tool: 'execute_js',
+          description: 'Simulate the problematic interaction',
+          parameters: tabId ? { tabId, expression: 'document.querySelector("button").click()' } : {},
+          dependsOn: stepNumber - 2
+        });
+        break;
+    }
+    
+    // Add verification step if we have room
+    if (steps.length < maxSteps && strategyType === 'step-by-step') {
+      steps.push({
+        step: stepNumber++,
+        action: 'Verify fix',
+        tool: 'execute_js',
+        description: 'Test if the issue has been resolved',
+        parameters: tabId ? { tabId, expression: 'console.log("Test verification")' } : {},
+        dependsOn: steps.length > 0 ? steps[steps.length - 1].step : undefined
+      });
+    }
+    
+    // Limit steps to maxSteps
+    return steps.slice(0, maxSteps);
+  }
+  
+  /**
+   * Get alternative debugging strategies
+   */
+  private getAlternativeStrategies(category: string): string[] {
+    const alternatives: string[] = [];
+    
+    switch (category) {
+      case 'null-reference':
+      case 'undefined-variable':
+        alternatives.push(
+          'Use watch_state_changes to monitor variable changes',
+          'Add defensive null checks in the code',
+          'Use TypeScript for better type safety'
+        );
+        break;
+        
+      case 'network-error':
+        alternatives.push(
+          'Check CORS configuration',
+          'Verify API endpoint availability',
+          'Add request retry logic'
+        );
+        break;
+        
+      case 'performance-issue':
+        alternatives.push(
+          'Profile with Chrome DevTools Performance tab',
+          'Implement code splitting',
+          'Optimize asset loading'
+        );
+        break;
+        
+      default:
+        alternatives.push(
+          'Try exploratory debugging strategy',
+          'Use monitor_events for comprehensive tracking',
+          'Check browser compatibility'
+        );
+    }
+    
+    return alternatives;
   }
 }
 
