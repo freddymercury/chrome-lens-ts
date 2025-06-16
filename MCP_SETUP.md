@@ -37,6 +37,20 @@ To use this MCP server with Claude Code, you need to configure it in your Claude
 }
 ```
 
+### Option 1b: NPM Start with Claude Integration
+```json
+{
+  "command": "npm",
+  "args": ["start"],
+  "cwd": "/Users/dennis/dev/rsrc/chrome-lens-ts",
+  "env": {
+    "ANTHROPIC_API_KEY": "sk-ant-api03-...",
+    "CLAUDE_ANALYSIS_ENABLED": "true",
+    "CLAUDE_MODEL": "claude-3-opus-20240229"
+  }
+}
+```
+
 ### Option 2: Direct Node
 ```json
 {

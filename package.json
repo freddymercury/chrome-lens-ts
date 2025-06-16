@@ -29,6 +29,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.54.0",
     "@modelcontextprotocol/sdk": "^0.6.0",
     "chrome-remote-interface": "^0.33.2",
     "dotenv": "^16.4.5",
