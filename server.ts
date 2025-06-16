@@ -16,6 +16,11 @@ import {
   sortSourceFiles,
   createSourceFileSummary
 } from './src/utils/pagination.js';
+import { 
+  filterValidSourceFiles, 
+  sortSourcesByPriority, 
+  enrichSourceMetadata
+} from './src/utils/source-file-utils.js';
 import {
   createConnectionState,
   isConnectionStale,
@@ -484,6 +489,9 @@ export class ChromeDevToolsMCPServer {
   private networkLogs: Map<string, any[]> = new Map();
   private errors: Map<string, any[]> = new Map();
   private sourceMapCache: Map<string, string | null> = new Map();
+  
+  // Source file cache for performance (v1.2.1 enhancement)
+  private sourceFileCache: Map<string, { sources: any[], cachedAt: number }> = new Map();
   
   // Source file registry for v1.1 debugging features
   public sourceFiles: Map<string, Map<string, any>> = new Map();
@@ -1518,6 +1526,7 @@ export class ChromeDevToolsMCPServer {
     this.networkLogs.clear();
     this.errors.clear();
     this.domStates.clear();
+    this.sourceFileCache.clear();
     
     if (LOG_LEVEL === 'debug') {
       console.log('All storage maps cleared');
@@ -4695,6 +4704,60 @@ export class ChromeDevToolsMCPServer {
         };
       }
 
+      // Check cache first (v1.2.1 enhancement)
+      const cacheKey = `sources_${tabId}`;
+      const cached = this.sourceFileCache.get(cacheKey);
+      const cacheMaxAge = 60000; // 1 minute cache
+      
+      if (cached && (Date.now() - cached.cachedAt < cacheMaxAge)) {
+        if (LOG_LEVEL === 'debug') {
+          console.log(`Using cached source files for tab ${tabId}`);
+        }
+        
+        // Apply filters and pagination to cached data
+        let filteredFiles = cached.sources;
+        if (filters) {
+          filteredFiles = filterSourceFiles(cached.sources, filters);
+        }
+        if (sortBy) {
+          filteredFiles = sortSourceFiles(filteredFiles, sortBy, sortOrder);
+        }
+        
+        const paginationResult = paginateResults(filteredFiles, {
+          page: continuationToken ? parseContinuationToken(continuationToken)?.page || 1 : 1,
+          pageSize,
+          maxResponseSize,
+          continuationToken
+        });
+        
+        return {
+          success: true,
+          message: `Found ${filteredFiles.length} cached source files in tab ${tabId}`,
+          sourceFiles: {
+            tabId,
+            timestamp,
+            cached: true,
+            cachedAt: new Date(cached.cachedAt).toISOString(),
+            scriptFiles: paginationResult.items,
+            breakdown: {
+              javascript: cached.sources.filter((f: any) => f.type === 'js').length,
+              typescript: cached.sources.filter((f: any) => f.type === 'ts').length,
+              css: cached.sources.filter((f: any) => f.type === 'css').length,
+              html: cached.sources.filter((f: any) => f.type === 'html').length,
+              inline: cached.sources.filter((f: any) => f.inline).length,
+              external: cached.sources.filter((f: any) => !f.inline).length,
+              withScriptId: cached.sources.filter((f: any) => f.scriptId).length,
+              modifiable: cached.sources.filter((f: any) => f.scriptId && !f.inline).length
+            }
+          },
+          pagination: paginationResult.pagination,
+          responseSize: calculateResponseSize(paginationResult.items),
+          continuationToken: paginationResult.pagination.hasNextPage
+            ? createContinuationToken(tabId, paginationResult.pagination.page + 1, filters)
+            : undefined
+        };
+      }
+
       // Enable debugger domain to access scripts and source files
       await client.Debugger.enable();
       
@@ -4930,16 +4993,27 @@ export class ChromeDevToolsMCPServer {
         sourceFiles.push(htmlFile);
       }
 
-      // Apply filters if provided
-      let filteredFiles = sourceFiles;
+      // Apply our pure function filters and enhancements
+      const validSourceFiles = filterValidSourceFiles(sourceFiles);
+      const prioritizedFiles = sortSourcesByPriority(validSourceFiles);
+      const enrichedFiles = prioritizedFiles.map(enrichSourceMetadata);
+      
+      // Apply user filters if provided
+      let filteredFiles = enrichedFiles;
       if (filters) {
-        filteredFiles = filterSourceFiles(sourceFiles, filters);
+        filteredFiles = filterSourceFiles(enrichedFiles, filters);
       }
       
-      // Apply sorting if provided
+      // Apply user sorting if provided (overrides priority sorting)
       if (sortBy) {
         filteredFiles = sortSourceFiles(filteredFiles, sortBy, sortOrder);
       }
+      
+      // Cache the enriched files for future requests (v1.2.1 enhancement)
+      this.sourceFileCache.set(cacheKey, {
+        sources: enrichedFiles,
+        cachedAt: Date.now()
+      });
       
       // Apply pagination
       const paginationResult = paginateResults(filteredFiles, {
