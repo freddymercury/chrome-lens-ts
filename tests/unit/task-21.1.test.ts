@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.STRATEGY_AI_ENABLED = 'true';
 process.env.WORKFLOW_COMPLEXITY_LIMIT = '10';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 21.1: Add suggest_debugging_strategy Tool Definition', () => {
   let server: ChromeDevToolsMCPServer;

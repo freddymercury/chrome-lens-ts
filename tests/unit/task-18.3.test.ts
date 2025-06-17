@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.RUNTIME_INSPECTION_ENABLED = 'true';
 process.env.STATE_ANALYSIS_ENABLED = 'true';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 18.3: analyze_runtime_state tool definition', () => {
   let server: ChromeDevToolsMCPServer;

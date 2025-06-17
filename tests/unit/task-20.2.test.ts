@@ -10,7 +10,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.EVENT_MONITORING_ENABLED = 'true';
 process.env.MAX_EVENT_BUFFER_SIZE = '1000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 20.2: Real-time Event Monitoring', () => {
   let server: ChromeDevToolsMCPServer;

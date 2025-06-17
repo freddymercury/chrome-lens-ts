@@ -10,7 +10,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.STATE_ANALYSIS_ENABLED = 'true';
 process.env.RUNTIME_INSPECTION_ENABLED = 'true';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 18.4: Runtime State Analysis Engine', () => {
   let server: ChromeDevToolsMCPServer;
@@ -24,7 +24,7 @@ describe('Task 18.4: Runtime State Analysis Engine', () => {
     mockClient = {
       send: jest.fn(),
       Runtime: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         evaluate: jest.fn(),
         getProperties: jest.fn(),
         globalLexicalScopeNames: jest.fn(),
@@ -32,12 +32,12 @@ describe('Task 18.4: Runtime State Analysis Engine', () => {
         releaseObjectGroup: jest.fn()
       },
       Debugger: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         evaluateOnCallFrame: jest.fn(),
         getStackTrace: jest.fn()
       },
       Profiler: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         getSamplingProfile: jest.fn()
       }
     };

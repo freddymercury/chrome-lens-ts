@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.RUNTIME_INSPECTION_ENABLED = 'true';
 process.env.MAX_INSPECTION_DEPTH = '5';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 18.1: inspect_variables tool definition', () => {
   let server: ChromeDevToolsMCPServer;

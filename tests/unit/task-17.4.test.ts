@@ -10,7 +10,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.DEBUGGER_ENABLED = 'true';
 process.env.STEP_TIMEOUT = '5000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 17.4: Step Debugging Engine', () => {
   let server: ChromeDevToolsMCPServer;
@@ -24,16 +24,16 @@ describe('Task 17.4: Step Debugging Engine', () => {
     mockClient = {
       send: jest.fn(),
       Debugger: {
-        enable: jest.fn().mockResolvedValue({} as any),
-        pause: jest.fn().mockResolvedValue({} as any),
-        resume: jest.fn().mockResolvedValue({} as any),
-        stepOver: jest.fn().mockResolvedValue({} as any),
-        stepInto: jest.fn().mockResolvedValue({} as any),
-        stepOut: jest.fn().mockResolvedValue({} as any),
-        setPauseOnExceptions: jest.fn().mockResolvedValue({} as any)
+        enable: jest.fn(() => Promise.resolve({})),
+        pause: jest.fn(() => Promise.resolve({})),
+        resume: jest.fn(() => Promise.resolve({})),
+        stepOver: jest.fn(() => Promise.resolve({})),
+        stepInto: jest.fn(() => Promise.resolve({})),
+        stepOut: jest.fn(() => Promise.resolve({})),
+        setPauseOnExceptions: jest.fn(() => Promise.resolve({}))
       },
       Runtime: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         evaluate: jest.fn()
       }
     };

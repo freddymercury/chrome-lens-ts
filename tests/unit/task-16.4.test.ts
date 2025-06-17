@@ -8,7 +8,7 @@ process.env.CHROME_DEBUG_PORT = '9222';
 process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.CODE_VALIDATION_STRICT = 'true';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 16.4: Modification Validation and Error Handling', () => {
   let server: ChromeDevToolsMCPServer;

@@ -6,7 +6,7 @@ dotenv.config();
 // Set environment variables before importing server
 process.env.MAX_TOOLS = '20';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 3.1: Empty Tool Handler Setup', () => {
   let server: ChromeDevToolsMCPServer;

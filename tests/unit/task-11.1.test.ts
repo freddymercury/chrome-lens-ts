@@ -3,7 +3,7 @@ import * as dotenv from 'dotenv';
 // Load test environment
 dotenv.config();
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 11.1: security_audit Tool Definition', () => {
   let server: ChromeDevToolsMCPServer;

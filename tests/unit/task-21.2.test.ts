@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.PROBLEM_ANALYSIS_DEPTH = '3';
 process.env.STRATEGY_AI_ENABLED = 'true';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 21.2: Implement Problem Analysis Engine', () => {
   let server: ChromeDevToolsMCPServer;

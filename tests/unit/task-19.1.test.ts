@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.ERROR_ANALYSIS_ENABLED = 'true';
 process.env.MAX_ERROR_STACK_DEPTH = '10';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 19.1: analyze_errors tool definition', () => {
   let server: ChromeDevToolsMCPServer;

@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.CODE_RELOAD_STRATEGY = 'hot';
 process.env.CODE_MODIFICATION_ENABLED = 'true';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 16.3: Real-time Code Modification Engine', () => {
   let server: ChromeDevToolsMCPServer;

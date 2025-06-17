@@ -7,7 +7,7 @@ dotenv.config();
 process.env.CHROME_DEBUG_PORT = '9222';
 process.env.CHROME_DEBUG_HOST = 'localhost';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 9.1: Add Network Domain to connectToTab', () => {
   let server: ChromeDevToolsMCPServer;

@@ -7,7 +7,7 @@ dotenv.config();
 process.env.CHROME_DEBUG_PORT = '9222';
 process.env.CHROME_DEBUG_HOST = 'localhost';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 13.2: Add XSS Check to Main Audit', () => {
   let server: ChromeDevToolsMCPServer;

@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.CODE_MODIFICATION_ENABLED = 'true';
 process.env.HOT_RELOAD_TIMEOUT = '5000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 16.1: modify_source_code tool definition', () => {
   let server: ChromeDevToolsMCPServer;

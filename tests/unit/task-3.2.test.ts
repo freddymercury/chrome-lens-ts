@@ -6,7 +6,7 @@ dotenv.config();
 // Set environment variables before importing server
 process.env.TOOL_TIMEOUT_MS = '30000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 3.2: CallTool Handler Structure', () => {
   let server: ChromeDevToolsMCPServer;

@@ -10,7 +10,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.STATE_MONITORING_ENABLED = 'true';
 process.env.MAX_WATCH_EXPRESSIONS = '100';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 20.4: State Change Monitoring Implementation', () => {
   let server: ChromeDevToolsMCPServer;

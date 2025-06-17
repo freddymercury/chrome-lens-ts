@@ -10,7 +10,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.DEBUGGER_ENABLED = 'true';
 process.env.BREAKPOINT_TIMEOUT = '30000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 17.2: Breakpoint Setting and Management', () => {
   let server: ChromeDevToolsMCPServer;
@@ -24,14 +24,14 @@ describe('Task 17.2: Breakpoint Setting and Management', () => {
     mockClient = {
       send: jest.fn(),
       Debugger: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         setBreakpointByUrl: jest.fn(),
         removeBreakpoint: jest.fn(),
         setBreakpointsActive: jest.fn(),
         getPossibleBreakpoints: jest.fn()
       },
       Runtime: {
-        enable: jest.fn().mockResolvedValue({} as any)
+        enable: jest.fn(() => Promise.resolve({}))
       }
     };
     

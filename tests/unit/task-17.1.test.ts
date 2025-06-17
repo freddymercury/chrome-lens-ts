@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.DEBUGGER_ENABLED = 'true';
 process.env.BREAKPOINT_TIMEOUT = '30000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 17.1: manage_breakpoints tool definition', () => {
   let server: ChromeDevToolsMCPServer;

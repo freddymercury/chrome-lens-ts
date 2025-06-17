@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 jest.mock('chrome-remote-interface');
 

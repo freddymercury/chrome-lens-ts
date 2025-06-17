@@ -1,4 +1,4 @@
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 import { jest } from '@jest/globals';
 
 describe('Task v1.1.3: Response Size Management', () => {
