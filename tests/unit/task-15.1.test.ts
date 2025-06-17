@@ -298,7 +298,7 @@ describe('Task 15.1: Add Performance Monitoring Tool', () => {
 
   test('get_performance_metrics nine tools exist now', async () => {
     const tools = await server.listTools();
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(19);
     
     const toolNames = tools.map(tool => tool.name);
     expect(toolNames).toContain('connect_to_chrome');

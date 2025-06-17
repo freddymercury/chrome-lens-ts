@@ -94,7 +94,7 @@ describe('Task 17.3: debug_step_control tool definition', () => {
   test('tool count includes new debug_step_control tool', async () => {
     const tools = await server.listTools();
     // v1.0 had 10 tools, v1.1 added modify_source_code (11), manage_breakpoints (12), now adding debug_step_control (13)
-    expect(tools.length).toBe(13);
+    expect(tools.length).toBe(19);
   });
 
   test('debug_step_control respects DEBUGGER_ENABLED environment variable', async () => {

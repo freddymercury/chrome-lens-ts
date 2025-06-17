@@ -75,7 +75,7 @@ describe('Task Phase 2.1: E2E Test Infrastructure', () => {
       const output = error.stdout || error.message;
       // Count E2E specific errors
       const lines = output.split('\n');
-      e2eErrors = lines.filter(line => 
+      e2eErrors = lines.filter((line: string) => 
         line.includes('tests/e2e') && line.includes('error TS')
       ).length;
     }
