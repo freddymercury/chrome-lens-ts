@@ -65,7 +65,7 @@ describe('Task Phase 2.1: E2E Test Infrastructure', () => {
 
   test('E2E tests compile without errors', () => {
     // This will pass if TypeScript can compile the E2E files
-    let hasErrors = false;
+    let e2eErrors = 0;
     try {
       execSync('npm run typecheck 2>&1', {
         cwd: path.join(__dirname, '../..'),
@@ -73,14 +73,15 @@ describe('Task Phase 2.1: E2E Test Infrastructure', () => {
       });
     } catch (error: any) {
       const output = error.stdout || error.message;
-      // Only check for E2E errors (not other errors)
-      if (output.includes('tests/e2e') && output.includes('error TS')) {
-        hasErrors = true;
-      }
+      // Count E2E specific errors
+      const lines = output.split('\n');
+      e2eErrors = lines.filter(line => 
+        line.includes('tests/e2e') && line.includes('error TS')
+      ).length;
     }
     
-    // We expect no E2E compilation errors
-    expect(hasErrors).toBe(false);
+    // We expect no E2E compilation errors (but other errors are OK)
+    expect(e2eErrors).toBe(0);
   });
 
   test('Express is installed for test server', () => {

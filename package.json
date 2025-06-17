@@ -9,7 +9,7 @@
     "build:prod": "tsc -p tsconfig.build.json --removeComments",
     "dev": "ts-node server.ts",
     "test": "jest",
-    "test:e2e": "jest tests/e2e",
+    "test:e2e": "jest --config jest.e2e.config.js",
     "test:server": "ts-node tests/e2e/test-server.ts",
     "lint": "eslint *.ts tests/**/*.ts",
     "typecheck": "tsc --noEmit",
