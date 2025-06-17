@@ -100,7 +100,7 @@ describe('Chrome Connection E2E', () => {
       
       await waitForCondition(async () => {
         const messages = await mcp.call('get_console_messages', { tabId });
-        return messages.messages.some(m => m.text === 'Test message');
+        return messages.messages.some((m: any) => m.text === 'Test message');
       });
       
       const messages = await mcp.call('get_console_messages', { tabId });
