@@ -133,7 +133,7 @@ describe('Task v1.1.1-BF3.1: Install Global Error Handlers', () => {
 
   test('should capture window.onerror events', async () => {
     // Mock Runtime.consoleAPICalled event
-    mockClient.Runtime.on.mockImplementation((event: string, handler: Function) => {
+    mockClient.Runtime.on.mockImplementation((event: string, handler: (...args: any[]) => void) => {
       if (event === 'consoleAPICalled') {
         // Simulate an error being captured
         setTimeout(() => {
@@ -180,7 +180,7 @@ describe('Task v1.1.1-BF3.1: Install Global Error Handlers', () => {
 
   test('should capture unhandledrejection events', async () => {
     // Mock unhandled rejection capture via console
-    mockClient.Runtime.on.mockImplementation((event: string, handler: Function) => {
+    mockClient.Runtime.on.mockImplementation((event: string, handler: (...args: any[]) => void) => {
       if (event === 'consoleAPICalled') {
         // Simulate unhandled rejection
         setTimeout(() => {

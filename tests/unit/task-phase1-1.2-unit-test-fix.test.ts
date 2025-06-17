@@ -5,6 +5,7 @@
 
 import { execSync } from 'child_process';
 import * as path from 'path';
+import * as fs from 'fs';
 
 describe('Task Phase 1.2: Unit Test Fixes', () => {
   const projectRoot = path.resolve(__dirname, '../..');
@@ -31,18 +32,21 @@ describe('Task Phase 1.2: Unit Test Fixes', () => {
     expect(result).toContain('3 passed'); // All 3 tests should pass
   });
 
-  test('package.json build script uses tsconfig.build.json', () => {
-    const packageJson = require(path.join(projectRoot, 'package.json'));
+  test('package.json build script uses tsconfig.build.json', async () => {
+    const packageJsonPath = path.join(projectRoot, 'package.json');
+    const packageJsonContent = await fs.promises.readFile(packageJsonPath, 'utf8');
+    const packageJson = JSON.parse(packageJsonContent);
     expect(packageJson.scripts.build).toBe('tsc -p tsconfig.build.json');
   });
 
-  test('tsconfig.json uses ES2022 module system', () => {
-    const tsconfig = require(path.join(projectRoot, 'tsconfig.json'));
+  test('tsconfig.json uses ES2022 module system', async () => {
+    const tsconfigPath = path.join(projectRoot, 'tsconfig.json');
+    const tsconfigContent = await fs.promises.readFile(tsconfigPath, 'utf8');
+    const tsconfig = JSON.parse(tsconfigContent);
     expect(tsconfig.compilerOptions.module).toBe('ES2022');
   });
 
   test('jest configuration exists as separate file', () => {
-    const fs = require('fs');
     const jestConfigPath = path.join(projectRoot, 'jest.config.js');
     expect(fs.existsSync(jestConfigPath)).toBe(true);
   });

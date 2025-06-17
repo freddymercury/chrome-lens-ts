@@ -7,7 +7,11 @@ dotenv.config();
 process.env.CHROME_DEBUG_PORT = '9222';
 process.env.CHROME_DEBUG_HOST = 'localhost';
 
+// Mock chrome-remote-interface before importing server
+jest.mock('chrome-remote-interface');
+
 import ChromeDevToolsMCPServer from '../../server';
+import CDP from 'chrome-remote-interface';
 
 describe('Task 9.2: Add Response Listener', () => {
   let server: ChromeDevToolsMCPServer;
@@ -33,32 +37,25 @@ describe('Task 9.2: Add Response Listener', () => {
         messageAdded: null
       },
       Runtime: {
-        enable: jest.fn().mockResolvedValue(undefined)
+        enable: jest.fn().mockResolvedValue(undefined),
+        on: jest.fn()
       },
       Network: {
         enable: jest.fn().mockResolvedValue(undefined),
-        requestWillBeSent: null,
-        responseReceived: null
+        on: jest.fn()
       },
       close: jest.fn().mockResolvedValue(undefined)
     };
 
-    // Mock CDP connection
-    const CDPMock = jest.fn().mockResolvedValue(mockClient);
-    jest.doMock('chrome-remote-interface', () => ({ default: CDPMock }));
+    // Mock CDP to return our mock client
+    (CDP as jest.MockedFunction<typeof CDP>).mockResolvedValue(mockClient as any);
 
-    // Import server after mocking
-    const { ChromeDevToolsMCPServer: TestServer } = await import('../../server');
-    const testServer = new TestServer();
-    testServer.setupToolHandlers();
+    const result = await server.connectToTab(validTabId, {});
 
-    const result = await testServer.connectToTab(validTabId, {});
-
-    if (result.success) {
-      // Verify that Network.responseReceived handler was set up
-      expect(mockClient.Network.responseReceived).toBeDefined();
-      expect(typeof mockClient.Network.responseReceived).toBe('function');
-    }
+    expect(result.success).toBe(true);
+    
+    // Verify that Network.responseReceived handler was set up
+    expect(mockClient.Network.on).toHaveBeenCalledWith('responseReceived', expect.any(Function));
   });
 
   test('network response handler stores responses correctly', async () => {

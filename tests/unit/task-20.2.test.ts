@@ -24,7 +24,7 @@ describe('Task 20.2: Real-time Event Monitoring', () => {
     const eventHandlers = new Map();
     mockClient = {
       send: jest.fn(),
-      on: jest.fn((event: string, handler: Function) => {
+      on: jest.fn((event: string, handler: (...args: any[]) => void) => {
         eventHandlers.set(event, handler);
       }),
       off: jest.fn((event: string) => {

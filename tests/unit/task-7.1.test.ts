@@ -7,7 +7,11 @@ dotenv.config();
 process.env.CHROME_DEBUG_PORT = '9222';
 process.env.CHROME_DEBUG_HOST = 'localhost';
 
+// Mock chrome-remote-interface before importing server
+jest.mock('chrome-remote-interface');
+
 import ChromeDevToolsMCPServer from '../../server';
+import CDP from 'chrome-remote-interface';
 
 describe('Task 7.1: Add Console Event Listener to connectToTab', () => {
   let server: ChromeDevToolsMCPServer;
@@ -25,34 +29,32 @@ describe('Task 7.1: Add Console Event Listener to connectToTab', () => {
   test('connectToTab sets up Console.messageAdded event listener', async () => {
     const validTabId = 'A1B2C3D4E5F6789012345678901234AB';
     
-    // Mock Chrome CDP client with Console domain
+    // Mock Chrome CDP client with Runtime domain (server uses Runtime.consoleAPICalled instead of Console)
     const mockClient = {
       Console: {
         enable: jest.fn().mockResolvedValue(undefined),
-        messageAdded: null // Will be set by connectToTab
+        on: jest.fn()
       },
       Runtime: {
-        enable: jest.fn().mockResolvedValue(undefined)
+        enable: jest.fn().mockResolvedValue(undefined),
+        on: jest.fn()
+      },
+      Network: {
+        enable: jest.fn().mockResolvedValue(undefined),
+        on: jest.fn()
       },
       close: jest.fn().mockResolvedValue(undefined)
     };
 
-    // Mock CDP connection
-    const CDPMock = jest.fn().mockResolvedValue(mockClient);
-    jest.doMock('chrome-remote-interface', () => ({ default: CDPMock }));
+    // Mock CDP to return our mock client
+    (CDP as jest.MockedFunction<typeof CDP>).mockResolvedValue(mockClient as any);
 
-    // Import server after mocking
-    const { ChromeDevToolsMCPServer: TestServer } = await import('../../server');
-    const testServer = new TestServer();
-    testServer.setupToolHandlers();
+    const result = await server.connectToTab(validTabId, {});
 
-    const result = await testServer.connectToTab(validTabId, {});
-
-    if (result.success) {
-      // Verify that Console.messageAdded handler was set up
-      expect(mockClient.Console.messageAdded).toBeDefined();
-      expect(typeof mockClient.Console.messageAdded).toBe('function');
-    }
+    expect(result.success).toBe(true);
+    
+    // Verify that Runtime.consoleAPICalled handler was set up (not Console.messageAdded)
+    expect(mockClient.Runtime.on).toHaveBeenCalledWith('consoleAPICalled', expect.any(Function));
   });
 
   test('console message handler stores messages correctly', async () => {

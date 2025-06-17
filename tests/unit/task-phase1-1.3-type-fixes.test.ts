@@ -5,6 +5,7 @@
 
 import { execSync } from 'child_process';
 import * as path from 'path';
+import * as fs from 'fs';
 
 describe('Task Phase 1.3: Type Fixes for Test Dependencies', () => {
   const projectRoot = path.resolve(__dirname, '../..');
@@ -51,7 +52,6 @@ describe('Task Phase 1.3: Type Fixes for Test Dependencies', () => {
     ];
     
     // Check that these files exist and don't have syntax errors
-    const fs = require('fs');
     for (const testFile of affectedTests) {
       const filePath = path.join(__dirname, testFile);
       if (fs.existsSync(filePath)) {

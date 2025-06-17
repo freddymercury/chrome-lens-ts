@@ -85,7 +85,9 @@ describe('Task Phase 2.1: E2E Test Infrastructure', () => {
   });
 
   test('Express is installed for test server', () => {
-    const packageJson = require(path.join(__dirname, '../../package.json'));
+    const packageJsonPath = path.join(__dirname, '../../package.json');
+    const packageJsonContent = fs.readFileSync(packageJsonPath, 'utf8');
+    const packageJson = JSON.parse(packageJsonContent);
     expect(packageJson.devDependencies.express).toBeDefined();
     expect(packageJson.devDependencies['@types/express']).toBeDefined();
   });

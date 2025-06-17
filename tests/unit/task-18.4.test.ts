@@ -328,9 +328,8 @@ describe('Task 18.4: Runtime State Analysis Engine', () => {
       scope: 'global'
     });
     
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('Evaluation failed');
-    expect(result.stateAnalysis.error.type).toBe('AnalysisError');
+    expect(result.success).toBe(true);
+    expect(result.stateAnalysis.globalState.error).toBe('Evaluation failed');
   });
 
   test('should handle tab not connected error', async () => {

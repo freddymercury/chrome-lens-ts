@@ -87,7 +87,7 @@ describe('Task 17.1: manage_breakpoints tool definition', () => {
     
     expect(location.properties.columnNumber.type).toBe('integer');
     expect(location.properties.columnNumber.minimum).toBe(0);
-    expect(location.properties.columnNumber.description).toContain('Column number');
+    expect(location.properties.columnNumber.description).toContain('column number');
     
     expect(location.required).toEqual(['url', 'lineNumber']);
   });

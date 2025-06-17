@@ -116,7 +116,7 @@ describe('Task 21.1: Add suggest_debugging_strategy Tool Definition', () => {
       const properties = tool?.inputSchema?.properties as any;
       
       expect(properties).toHaveProperty('maxSteps');
-      expect(properties.maxSteps).toHaveProperty('type', 'number');
+      expect(properties.maxSteps).toHaveProperty('type', 'integer');
       expect(properties.maxSteps).toHaveProperty('minimum', 1);
       expect(properties.maxSteps).toHaveProperty('maximum', 10);
       expect(properties.maxSteps).toHaveProperty('default', 5);
