@@ -4,7 +4,7 @@
 
 import { ChromeInstance, launchChrome } from '../utils/chrome-launcher';
 import { MCPTestClient, connectMCP } from '../utils/mcp-client';
-import { loadFixture, waitForCondition, generateTestFixtures } from '../utils/test-helpers';
+import { loadFixture, generateTestFixtures } from '../utils/test-helpers';
 
 describe('Network Monitoring E2E', () => {
   let chrome: ChromeInstance;
