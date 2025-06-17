@@ -13,7 +13,7 @@ describe('Task 1.1: TypeScript Project Initialization', () => {
     expect(packageJson.version).toBeDefined();
     expect(packageJson.main).toBe('dist/server.js');
     expect(packageJson.scripts).toBeDefined();
-    expect(packageJson.scripts.build).toBe('tsc');
+    expect(packageJson.scripts.build).toBe('tsc -p tsconfig.build.json');
     expect(packageJson.scripts.dev).toBe('ts-node server.ts');
     expect(packageJson.scripts.test).toBe('jest');
     expect(packageJson.scripts.lint).toBeDefined();
@@ -28,7 +28,7 @@ describe('Task 1.1: TypeScript Project Initialization', () => {
     expect(tsconfig.compilerOptions).toBeDefined();
     expect(tsconfig.compilerOptions.strict).toBe(true);
     expect(tsconfig.compilerOptions.target).toBe('ES2022');
-    expect(tsconfig.compilerOptions.module).toBe('commonjs');
+    expect(tsconfig.compilerOptions.module).toBe('ES2022');
     expect(tsconfig.compilerOptions.outDir).toBe('./dist');
     expect(tsconfig.compilerOptions.rootDir).toBe('./');
     expect(tsconfig.compilerOptions.esModuleInterop).toBe(true);
