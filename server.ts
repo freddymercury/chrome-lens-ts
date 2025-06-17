@@ -1384,6 +1384,13 @@ export class ChromeDevToolsMCPServer {
   }
 
   /**
+   * Get list of available tools
+   */
+  public getTools(): any[] {
+    return this.tools || [];
+  }
+
+  /**
    * Call a tool with the given name and parameters
    * Currently throws MethodNotFound for any tool as none are implemented yet
    */
@@ -1523,6 +1530,24 @@ export class ChromeDevToolsMCPServer {
     
     if (LOG_LEVEL === 'debug') {
       console.log(`Added entry to ${mapName} storage for key: ${key}`);
+    }
+  }
+
+  /**
+   * Get an entry from a storage map (for testing purposes)
+   */
+  public getStorageEntry(mapName: string, key: string): any {
+    switch (mapName) {
+      case 'clients':
+        return this.clients.get(key);
+      case 'consoleMessages':
+        return this.consoleMessages.get(key);
+      case 'networkLogs':
+        return this.networkLogs.get(key);
+      case 'errors':
+        return this.errors.get(key);
+      default:
+        throw new Error(`Unknown storage map: ${mapName}`);
     }
   }
 

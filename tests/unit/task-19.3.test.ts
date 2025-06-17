@@ -256,7 +256,7 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
     
     // Mock DOM state collection
     mockClient.Runtime.evaluate = jest.fn()
-      .mockResolvedValueOnce({
+      .mockImplementationOnce(() => Promise.resolve({
         result: {
           value: {
             readyState: 'complete',
@@ -265,8 +265,8 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
             referrer: 'http://example.com/'
           }
         }
-      })
-      .mockResolvedValueOnce({
+      }))
+      .mockImplementationOnce(() => Promise.resolve({
         result: {
           value: {
             activeElement: 'button#submit',
@@ -275,7 +275,7 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
             documentScrollLeft: 0
           }
         }
-      });
+      }));
     
     const errorWithDOM = await server.collectDOMContext(tabId, {
       type: 'runtime',
@@ -333,7 +333,7 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
     // Mock all context collectors
     mockClient.Runtime.evaluate = jest.fn(() => Promise.resolve({
       result: { value: { test: 'context' } }
-    });
+    }));
     
     const enhancedError = await server.enhanceErrorWithFullContext(tabId, baseError);
     
