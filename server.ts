@@ -29,6 +29,10 @@ import {
   cleanupOldData,
   safeArrayAccess
 } from './src/utils/retry-wrapper.js';
+import { EventStreamManager } from './src/event-system/event-stream-manager.js';
+import { StateManager } from './src/state-management/state-manager.js';
+import { createStrategyToolSchema } from './src/intelligence/strategy-tool-schema.js';
+import { StrategyToolHandler } from './src/intelligence/strategy-tool-handler.js';
 // @ts-ignore - Types are in types/chrome-remote-interface.d.ts
 
 // Load environment variables
@@ -522,6 +526,15 @@ export class ChromeDevToolsMCPServer {
   // Cleanup interval for old data
   // @ts-ignore - Used for cleanup but not directly referenced
   private cleanupInterval: NodeJS.Timeout | null = null;
+  
+  // v1.2 Event Stream Manager
+  private eventStreamManager: EventStreamManager | null = null;
+  
+  // v1.2 State Manager
+  private stateManager: StateManager;
+  
+  // v1.2 Strategy Tool Handler
+  private strategyToolHandler: StrategyToolHandler | null = null;
 
   constructor() {
     // For now, we'll initialize this as a placeholder
@@ -533,6 +546,14 @@ export class ChromeDevToolsMCPServer {
         tools: {},
       },
     };
+    
+    // Initialize v1.2 managers
+    this.stateManager = new StateManager({
+      enableEventSourcing: true,
+      maxEventHistory: 10000,
+      enableAutoSnapshots: process.env.ENABLE_AUTO_SNAPSHOTS === 'true',
+      autoSnapshotInterval: parseInt(process.env.AUTO_SNAPSHOT_INTERVAL || '300000', 10)
+    });
     
     // Initialize tools
     this.setupToolHandlers();
@@ -1310,6 +1331,7 @@ export class ChromeDevToolsMCPServer {
           required: ['tabId', 'expressions']
         }
       },
+<<<<<<< HEAD
       {
         name: 'suggest_debugging_strategy',
         description: 'AI-driven debugging workflow suggestions based on problem description and context. Analyzes the debugging scenario and recommends optimal strategies.',
@@ -1355,6 +1377,10 @@ export class ChromeDevToolsMCPServer {
           additionalProperties: false
         }
       }
+=======
+      // v1.2 Intelligence Layer tool
+      createStrategyToolSchema()
+>>>>>>> origin/main
     ];
     
     if (LOG_LEVEL === 'debug') {
@@ -8097,6 +8123,7 @@ export class ChromeDevToolsMCPServer {
     const logs = this.networkLogs.get(tabId) || [];
     return safeArrayAccess(logs, (items) => [...items]);
   }
+<<<<<<< HEAD
 
   /**
    * Suggest debugging strategy based on problem description
@@ -8286,10 +8313,37 @@ export class ChromeDevToolsMCPServer {
           tool: 'monitor_events',
           description: 'Track DOM mutations and user interactions',
           parameters: tabId ? { tabId, eventTypes: ['dom'] } : {}
+=======
+  
+  /**
+   * v1.2 Intelligence Layer: Suggest debugging strategy
+   */
+  private async suggestDebuggingStrategy(parameters: any): Promise<any> {
+    if (LOG_LEVEL === 'debug') {
+      console.log('Suggest debugging strategy called with:', parameters);
+    }
+    
+    // Initialize event stream manager and strategy handler if not already done
+    if (!this.eventStreamManager) {
+      // Create event stream manager for the first client if available
+      const firstClientEntry = Array.from(this.clients.entries())[0];
+      if (firstClientEntry) {
+        const [, client] = firstClientEntry;
+        this.eventStreamManager = new EventStreamManager(client, {
+          bufferSize: parseInt(process.env.EVENT_BUFFER_SIZE || '1000', 10),
+          throttleMs: parseInt(process.env.EVENT_THROTTLE_MS || '100', 10)
+        });
+      } else {
+        // Create without client for now
+        this.eventStreamManager = new EventStreamManager(null as any, {
+          bufferSize: parseInt(process.env.EVENT_BUFFER_SIZE || '1000', 10),
+          throttleMs: parseInt(process.env.EVENT_THROTTLE_MS || '100', 10)
+>>>>>>> origin/main
         });
       }
     }
     
+<<<<<<< HEAD
     // Category-specific steps
     switch (category) {
       case 'null-reference':
@@ -8427,6 +8481,45 @@ export class ChromeDevToolsMCPServer {
     }
     
     return alternatives;
+=======
+    if (!this.strategyToolHandler) {
+      this.strategyToolHandler = new StrategyToolHandler(this.stateManager, this.eventStreamManager);
+    }
+    
+    // Update state if tabId provided
+    if (parameters.tabId) {
+      const client = this.clients.get(parameters.tabId);
+      if (client) {
+        // Update state manager with current tab info
+        const existingTab = this.stateManager.getTab(parameters.tabId);
+        if (!existingTab) {
+          this.stateManager.addTab(parameters.tabId, {
+            id: parameters.tabId,
+            title: 'Chrome Tab',
+            url: '',
+            connected: true,
+            monitoring: this.eventMonitors.has(parameters.tabId),
+            metrics: {
+              consoleMessages: this.consoleMessages.get(parameters.tabId)?.length || 0,
+              networkRequests: this.networkLogs.get(parameters.tabId)?.length || 0,
+              runtimeErrors: this.errors.get(parameters.tabId)?.length || 0,
+              domMutations: 0,
+              performanceScore: 0
+            }
+          });
+        }
+      }
+    }
+    
+    // Call the strategy tool handler
+    const response = await this.strategyToolHandler.handleStrategyRequest(parameters);
+    
+    if (LOG_LEVEL === 'debug') {
+      console.log('Strategy suggestion response:', response);
+    }
+    
+    return response;
+>>>>>>> origin/main
   }
 }
 
