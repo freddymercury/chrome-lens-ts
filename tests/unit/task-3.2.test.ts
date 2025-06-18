@@ -6,7 +6,7 @@ dotenv.config();
 // Set environment variables before importing server
 process.env.TOOL_TIMEOUT_MS = '30000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 3.2: CallTool Handler Structure', () => {
   let server: ChromeDevToolsMCPServer;
@@ -46,7 +46,7 @@ describe('Task 3.2: CallTool Handler Structure', () => {
     
     try {
       await server.callTool('unknown_tool', {});
-    } catch (error) {
+    } catch (_error) {
       // Should fail quickly with unknown tool error, not timeout
       const elapsed = Date.now() - startTime;
       expect(elapsed).toBeLessThan(1000); // Should fail fast, not wait for timeout

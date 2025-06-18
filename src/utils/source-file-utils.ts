@@ -124,8 +124,13 @@ function calculateSourcePriority(source: Source): number {
  * Pure function - returns new enriched object
  */
 export function enrichSourceMetadata(source: Source): EnrichedSource {
-  const type = detectFileType(source.url);
-  const size = source.content ? new TextEncoder().encode(source.content).length : 0;
+  // If source already has a type property (from the server), preserve it if valid
+  const validTypes = ['js', 'ts', 'css', 'html'];
+  const sourceWithType = source as any;
+  const type = (sourceWithType.type && validTypes.includes(sourceWithType.type)) 
+    ? sourceWithType.type 
+    : detectFileType(source.url);
+  const size = sourceWithType.size || (source.content ? new TextEncoder().encode(source.content).length : 0);
   
   return {
     ...source,
@@ -141,7 +146,9 @@ export function enrichSourceMetadata(source: Source): EnrichedSource {
  * Pure function
  */
 function detectFileType(url: string): string {
-  const lowerUrl = url.toLowerCase();
+  // Remove query parameters and fragments from URL
+  const cleanUrl = url.split('?')[0].split('#')[0];
+  const lowerUrl = cleanUrl.toLowerCase();
   
   if (lowerUrl.endsWith('.js') || lowerUrl.endsWith('.mjs')) {
     return 'javascript';
@@ -177,9 +184,12 @@ function detectFileType(url: string): string {
     return 'svg';
   }
   
-  // Try to detect from MIME type in URL if available
+  // Try to detect from MIME type in URL if available (check original URL)
   if (url.includes('.js?') || url.includes('.js#')) {
     return 'javascript';
+  }
+  if (url.includes('.ts?') || url.includes('.ts#')) {
+    return 'typescript';
   }
   
   return 'unknown';

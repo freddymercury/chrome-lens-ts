@@ -6,7 +6,7 @@ dotenv.config();
 // Set environment variables before importing server
 process.env.MCP_TRANSPORT = 'stdio';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 2.3: Server Run Method', () => {
   let server: ChromeDevToolsMCPServer;

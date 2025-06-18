@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.STRATEGY_AI_ENABLED = 'true';
 process.env.WORKFLOW_COMPLEXITY_LIMIT = '10';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 21.1: Add suggest_debugging_strategy Tool Definition', () => {
   let server: ChromeDevToolsMCPServer;
@@ -116,7 +116,7 @@ describe('Task 21.1: Add suggest_debugging_strategy Tool Definition', () => {
       const properties = tool?.inputSchema?.properties as any;
       
       expect(properties).toHaveProperty('maxSteps');
-      expect(properties.maxSteps).toHaveProperty('type', 'number');
+      expect(properties.maxSteps).toHaveProperty('type', 'integer');
       expect(properties.maxSteps).toHaveProperty('minimum', 1);
       expect(properties.maxSteps).toHaveProperty('maximum', 10);
       expect(properties.maxSteps).toHaveProperty('default', 5);
@@ -134,8 +134,8 @@ describe('Task 21.1: Add suggest_debugging_strategy Tool Definition', () => {
 
     it('should maintain correct tool count after addition', async () => {
       const tools = await server.listTools();
-      // Should have at least 19 tools (18 existing + 1 new)
-      expect(tools.length).toBeGreaterThanOrEqual(19);
+      // Should have at least 20 tools (19 existing + 1 new)
+      expect(tools.length).toBeGreaterThanOrEqual(20);
     });
   });
 });

@@ -7,7 +7,11 @@ dotenv.config();
 process.env.CHROME_DEBUG_PORT = '9222';
 process.env.CHROME_DEBUG_HOST = 'localhost';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+// Mock chrome-remote-interface before importing server
+jest.mock('chrome-remote-interface');
+
+import ChromeDevToolsMCPServer from '../../server';
+import CDP from 'chrome-remote-interface';
 
 describe('Task 9.1: Add Network Domain to connectToTab', () => {
   let server: ChromeDevToolsMCPServer;
@@ -33,37 +37,32 @@ describe('Task 9.1: Add Network Domain to connectToTab', () => {
         messageAdded: null
       },
       Runtime: {
-        enable: jest.fn().mockResolvedValue(undefined)
+        enable: jest.fn().mockResolvedValue(undefined),
+        on: jest.fn()
       },
       Network: {
         enable: jest.fn().mockResolvedValue(undefined),
-        requestWillBeSent: null
+        on: jest.fn()
       },
       close: jest.fn().mockResolvedValue(undefined)
     };
 
-    // Mock CDP connection
-    const CDPMock = jest.fn().mockResolvedValue(mockClient);
-    jest.doMock('chrome-remote-interface', () => ({ default: CDPMock }));
+    // Mock CDP to return our mock client
+    (CDP as jest.MockedFunction<typeof CDP>).mockResolvedValue(mockClient as any);
 
-    // Import server after mocking
-    const { ChromeDevToolsMCPServer: TestServer } = await import('../../server');
-    const testServer = new TestServer();
-    testServer.setupToolHandlers();
+    const result = await server.connectToTab(validTabId, {});
 
-    const result = await testServer.connectToTab(validTabId, {});
-
-    if (result.success) {
-      // Verify that Network.enable was called
-      expect(mockClient.Network.enable).toHaveBeenCalled();
-      
-      // Verify that Network domain is included in enabled domains
-      expect(result.domains).toContain('Network');
-      
-      // Verify that Network.requestWillBeSent handler was set up
-      expect(mockClient.Network.requestWillBeSent).toBeDefined();
-      expect(typeof mockClient.Network.requestWillBeSent).toBe('function');
-    }
+    expect(result.success).toBe(true);
+    
+    // Verify that Network.enable was called
+    expect(mockClient.Network.enable).toHaveBeenCalled();
+    
+    // Verify that Network domain is included in enabled domains
+    expect(result.domains).toContain('Network');
+    
+    // Verify that Network event handlers were set up
+    expect(mockClient.Network.on).toHaveBeenCalledWith('requestWillBeSent', expect.any(Function));
+    expect(mockClient.Network.on).toHaveBeenCalledWith('responseReceived', expect.any(Function));
   });
 
   test('network request handler stores requests correctly', async () => {

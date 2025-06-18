@@ -8,7 +8,7 @@ process.env.CHROME_DEBUG_PORT = '9222';
 process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.CODE_VALIDATION_STRICT = 'true';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 16.4: Modification Validation and Error Handling', () => {
   let server: ChromeDevToolsMCPServer;
@@ -23,13 +23,17 @@ describe('Task 16.4: Modification Validation and Error Handling', () => {
       send: jest.fn(),
       Debugger: {
         enable: jest.fn().mockResolvedValue({}),
-        setScriptSource: jest.fn(),
-        getScriptSource: jest.fn()
+        setScriptSource: jest.fn().mockResolvedValue({
+          status: 'Ok'
+        }),
+        getScriptSource: jest.fn().mockResolvedValue({
+          scriptSource: '// Original source code'
+        })
       },
       Runtime: {
         enable: jest.fn().mockResolvedValue({}),
         evaluate: jest.fn(),
-        compileScript: jest.fn()
+        compileScript: jest.fn().mockResolvedValue({})
       },
       Page: {
         reload: jest.fn().mockResolvedValue({})
@@ -215,6 +219,11 @@ describe('Task 16.4: Modification Validation and Error Handling', () => {
       hotReload: false,
       validateSyntax: true
     });
+    
+    // Debug: log the result to see what happened
+    if (!result.success) {
+      console.log('Modification failed:', JSON.stringify(result, null, 2));
+    }
     
     // Should succeed as runtime JS validation doesn't catch TS errors
     expect(result.success).toBe(true);

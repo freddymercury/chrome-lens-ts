@@ -7,7 +7,7 @@ dotenv.config();
 process.env.MCP_SERVER_NAME = 'test-chrome-lens';
 process.env.MCP_SERVER_VERSION = '0.1.0-test';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 2.1: Basic MCP Server Class', () => {
   let server: ChromeDevToolsMCPServer;

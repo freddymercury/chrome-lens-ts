@@ -29,12 +29,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       // Create ChromeDevToolsMCPServer instance and attach handlers
       const chromeServer = new ChromeDevToolsMCPServer();
 
+      // Import schemas
+      const { ListToolsRequestSchema, CallToolRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
+      
       // Attach tool handlers
-      server.setRequestHandler('tools/list', async () => ({
+      server.setRequestHandler(ListToolsRequestSchema, async () => ({
         tools: chromeServer.getTools(),
       }));
 
-      server.setRequestHandler('tools/call', async (request) => {
+      server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { name, arguments: args } = request.params;
         return {
           content: [

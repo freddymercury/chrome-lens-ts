@@ -3,7 +3,7 @@ import * as dotenv from 'dotenv';
 // Load test environment
 dotenv.config();
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 10.1: execute_js Tool Definition', () => {
   let server: ChromeDevToolsMCPServer;

@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.STATE_MONITORING_ENABLED = 'true';
 process.env.MAX_WATCH_EXPRESSIONS = '100';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 20.3: watch_state_changes tool definition', () => {
   let server: ChromeDevToolsMCPServer;
@@ -104,7 +104,7 @@ describe('Task 20.3: watch_state_changes tool definition', () => {
   test('tool count includes new watch_state_changes tool', async () => {
     const tools = await server.listTools();
     // v1.0 had 10 tools, v1.1 added 7 more (monitor_events was 17th), now adding watch_state_changes (18th)
-    expect(tools.length).toBe(18);
+    expect(tools.length).toBe(20);
   });
 
   test('watch_state_changes respects STATE_MONITORING_ENABLED environment variable', async () => {

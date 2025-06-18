@@ -19,8 +19,8 @@ describe('Chrome Lens v1.2 Integration', () => {
   test('should include suggest_debugging_strategy in available tools', async () => {
     const tools = await server.listTools();
     
-    // Should have 19 tools now (18 + suggest_debugging_strategy)
-    expect(tools.length).toBe(19);
+    // Should have 20 tools now (19 + get_version)
+    expect(tools.length).toBe(20);
     
     // Find the suggest_debugging_strategy tool
     const strategyTool = tools.find(t => t.name === 'suggest_debugging_strategy');
@@ -176,7 +176,7 @@ describe('Chrome Lens v1.2 Integration', () => {
       expect(tool).toBeDefined();
     }
 
-    // Total should be 19 tools
-    expect(tools.length).toBe(19);
+    // Total should be 20 tools
+    expect(tools.length).toBe(20);
   });
 });

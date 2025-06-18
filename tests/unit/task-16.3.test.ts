@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.CODE_RELOAD_STRATEGY = 'hot';
 process.env.CODE_MODIFICATION_ENABLED = 'true';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 16.3: Real-time Code Modification Engine', () => {
   let server: ChromeDevToolsMCPServer;
@@ -27,7 +27,10 @@ describe('Task 16.3: Real-time Code Modification Engine', () => {
         setScriptSource: jest.fn().mockResolvedValue({
           status: 'Ok'
         }),
-        setBreakpointsActive: jest.fn().mockResolvedValue({})
+        setBreakpointsActive: jest.fn().mockResolvedValue({}),
+        getScriptSource: jest.fn().mockResolvedValue({
+          scriptSource: '// Original source code'
+        })
       },
       Runtime: {
         enable: jest.fn().mockResolvedValue({}),
@@ -100,10 +103,11 @@ describe('Task 16.3: Real-time Code Modification Engine', () => {
       status: 'Ok'
     });
     
-    // Mock hot reload via Runtime.evaluate
-    mockClient.Runtime.evaluate.mockResolvedValue({
-      result: { value: true }
-    });
+    // Mock hot reload via Runtime.evaluate - sequence of calls made by attemptHotReload
+    mockClient.Runtime.evaluate
+      .mockResolvedValueOnce({ result: { value: false } }) // Vite check fails
+      .mockResolvedValueOnce({ result: { value: true } })  // Webpack check succeeds
+      .mockResolvedValueOnce({ result: { value: { success: true, accepted: true, reloadedModules: ['http://example.com/module.js'] } } }); // Webpack HMR succeeds
     
     const result = await server.modifySourceCode({
       tabId,
@@ -136,8 +140,14 @@ describe('Task 16.3: Real-time Code Modification Engine', () => {
       status: 'Ok'
     });
     
-    // Mock failed hot reload
-    mockClient.Runtime.evaluate.mockRejectedValue(new Error('Hot reload not supported'));
+    // Mock failed hot reload - all checks fail
+    mockClient.Runtime.evaluate
+      .mockResolvedValueOnce({ result: { value: false } }) // Vite check fails
+      .mockResolvedValueOnce({ result: { value: false } }) // Webpack check fails  
+      .mockResolvedValueOnce({ result: { value: { success: false } } }); // ES module reload fails
+    
+    // Mock Page.enable and Page.reload
+    mockClient.Page.enable = jest.fn().mockResolvedValue({});
     
     const result = await server.modifySourceCode({
       tabId,
@@ -283,7 +293,7 @@ describe('Task 16.3: Real-time Code Modification Engine', () => {
     });
     
     expect(result.success).toBe(false);
-    expect(result.error).toContain('Source file not found');
+    expect(result.error.message).toContain('Could not find source file matching');
   });
 
   test('should handle tab not connected error', async () => {

@@ -10,7 +10,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.ERROR_ANALYSIS_ENABLED = 'true';
 process.env.MAX_ERROR_STACK_DEPTH = '10';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 19.2: Error Analysis Engine', () => {
   let server: ChromeDevToolsMCPServer;
@@ -24,22 +24,22 @@ describe('Task 19.2: Error Analysis Engine', () => {
     mockClient = {
       send: jest.fn(),
       Runtime: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         evaluate: jest.fn(),
         getProperties: jest.fn(),
         getExceptionDetails: jest.fn()
       },
       Debugger: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         getScriptSource: jest.fn(),
         getPossibleBreakpoints: jest.fn()
       },
       Log: {
-        enable: jest.fn().mockResolvedValue({} as any),
-        clear: jest.fn().mockResolvedValue({} as any)
+        enable: jest.fn(() => Promise.resolve({})),
+        clear: jest.fn(() => Promise.resolve({}))
       },
       Network: {
-        enable: jest.fn().mockResolvedValue({} as any)
+        enable: jest.fn(() => Promise.resolve({}))
       }
     };
     

@@ -8,7 +8,7 @@ process.env.CHROME_DEBUG_PORT = '9222';
 process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.SOURCE_DISCOVERY_TIMEOUT = '5000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 16.2: Source Code Discovery and Targeting', () => {
   let server: ChromeDevToolsMCPServer;

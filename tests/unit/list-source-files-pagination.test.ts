@@ -1,4 +1,4 @@
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 import { jest } from '@jest/globals';
 
 describe('list_source_files pagination integration', () => {
@@ -128,7 +128,7 @@ describe('list_source_files pagination integration', () => {
       });
       
       expect(result.success).toBe(true);
-      expect(result.sourceFiles.scriptFiles.length).toBeLessThanOrEqual(50);
+      expect(result.sourceFiles.files.length).toBeLessThanOrEqual(50);
       expect(result.pagination.pageSize).toBeLessThanOrEqual(50);
     });
 
@@ -140,7 +140,7 @@ describe('list_source_files pagination integration', () => {
       
       expect(result.success).toBe(true);
       expect(result.responseSize).toBeLessThanOrEqual(100000);
-      expect(result.sourceFiles.scriptFiles.length).toBeLessThanOrEqual(100); // Should have fewer files
+      expect(result.sourceFiles.files.length).toBeLessThanOrEqual(100); // Should have fewer files
     });
 
     test('provides continuation token for next page', async () => {
@@ -171,8 +171,8 @@ describe('list_source_files pagination integration', () => {
       
       expect(secondPage.success).toBe(true);
       expect(secondPage.pagination.page).toBe(2);
-      expect(secondPage.sourceFiles.scriptFiles[0].scriptId).not.toBe(
-        firstPage.sourceFiles.scriptFiles[0].scriptId
+      expect(secondPage.sourceFiles.files[0].scriptId).not.toBe(
+        firstPage.sourceFiles.files[0].scriptId
       );
     });
 
@@ -186,8 +186,8 @@ describe('list_source_files pagination integration', () => {
       });
       
       expect(result.success).toBe(true);
-      expect(result.sourceFiles.scriptFiles.length).toBeLessThan(500);
-      expect(result.sourceFiles.scriptFiles.every((f: any) => 
+      expect(result.sourceFiles.files.length).toBeLessThan(500);
+      expect(result.sourceFiles.files.every((f: any) => 
         f.url.includes('/src/file1')
       )).toBe(true);
     });
@@ -201,12 +201,12 @@ describe('list_source_files pagination integration', () => {
       });
       
       expect(result.success).toBe(true);
-      expect(result.sourceFiles.scriptFiles.length).toBe(10);
+      expect(result.sourceFiles.files.length).toBe(10);
       
       // Check that files are sorted by size
-      for (let i = 1; i < result.sourceFiles.scriptFiles.length; i++) {
-        expect(result.sourceFiles.scriptFiles[i-1].length).toBeGreaterThanOrEqual(
-          result.sourceFiles.scriptFiles[i].length
+      for (let i = 1; i < result.sourceFiles.files.length; i++) {
+        expect(result.sourceFiles.files[i-1].length).toBeGreaterThanOrEqual(
+          result.sourceFiles.files[i].length
         );
       }
     });
@@ -236,7 +236,7 @@ describe('list_source_files pagination integration', () => {
       });
       
       expect(result.success).toBe(true);
-      expect(result.sourceFiles.scriptFiles).toHaveLength(1); // Still has HTML file
+      expect(result.sourceFiles.files).toHaveLength(1); // Still has HTML file
       expect(result.pagination.totalItems).toBe(1); // HTML file is always added
       expect(result.pagination.hasNextPage).toBe(false);
     });

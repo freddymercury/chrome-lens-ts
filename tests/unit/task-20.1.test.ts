@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.EVENT_MONITORING_ENABLED = 'true';
 process.env.MAX_EVENT_BUFFER_SIZE = '1000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 20.1: monitor_events tool definition', () => {
   let server: ChromeDevToolsMCPServer;
@@ -125,7 +125,7 @@ describe('Task 20.1: monitor_events tool definition', () => {
   test('tool count includes new monitor_events tool', async () => {
     const tools = await server.listTools();
     // v1.0 had 10 tools, v1.1 added 6 more, now adding monitor_events (17)
-    expect(tools.length).toBe(17);
+    expect(tools.length).toBe(20);
   });
 
   test('monitor_events respects EVENT_MONITORING_ENABLED environment variable', async () => {

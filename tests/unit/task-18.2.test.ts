@@ -10,7 +10,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.RUNTIME_INSPECTION_ENABLED = 'true';
 process.env.MAX_INSPECTION_DEPTH = '5';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 18.2: Variable Inspection Engine', () => {
   let server: ChromeDevToolsMCPServer;
@@ -24,7 +24,7 @@ describe('Task 18.2: Variable Inspection Engine', () => {
     mockClient = {
       send: jest.fn(),
       Runtime: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         evaluate: jest.fn(),
         getProperties: jest.fn(),
         callFunctionOn: jest.fn(),

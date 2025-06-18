@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 jest.mock('chrome-remote-interface');
 
@@ -71,7 +71,7 @@ describe('Task v1.1.1-BF2.3: Add Modification Rollback Support', () => {
     });
     
     expect(result.success).toBe(true);
-    expect(mockClient.send).toHaveBeenCalledWith('Debugger.getScriptSource', { scriptId: 'script-1' });
+    expect(mockClient.Debugger.getScriptSource).toHaveBeenCalledWith({ scriptId: 'script-1' });
     
     // Check that original source was stored in registry
     const registry = (server as any).sourceFiles.get(mockTabId);

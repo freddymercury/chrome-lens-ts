@@ -10,7 +10,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.ERROR_ANALYSIS_ENABLED = 'true';
 process.env.ERROR_CONTEXT_ENABLED = 'true';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 19.3: Enhanced Error Context Collection', () => {
   let server: ChromeDevToolsMCPServer;
@@ -26,24 +26,24 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
       on: jest.fn(),
       off: jest.fn(),
       Runtime: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         exceptionThrown: jest.fn()
       },
       Console: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         messageAdded: jest.fn()
       },
       Network: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         loadingFailed: jest.fn(),
         responseReceived: jest.fn()
       },
       Security: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         securityStateChanged: jest.fn()
       },
       Log: {
-        enable: jest.fn().mockResolvedValue({} as any),
+        enable: jest.fn(() => Promise.resolve({})),
         entryAdded: jest.fn()
       }
     };
@@ -225,7 +225,7 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
     const tabId = 'ABCDEF0123456789ABCDEF0123456789';
     
     // Mock browser context
-    mockClient.Runtime.evaluate = jest.fn().mockResolvedValue({
+    mockClient.Runtime.evaluate = jest.fn(() => Promise.resolve({
       result: {
         value: {
           userAgent: 'Mozilla/5.0 Chrome/120.0.0.0',
@@ -239,7 +239,7 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
           }
         }
       }
-    });
+    }));
     
     const errorWithContext = await server.collectBrowserContext(tabId, {
       type: 'runtime',
@@ -256,7 +256,7 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
     
     // Mock DOM state collection
     mockClient.Runtime.evaluate = jest.fn()
-      .mockResolvedValueOnce({
+      .mockImplementationOnce(() => Promise.resolve({
         result: {
           value: {
             readyState: 'complete',
@@ -265,8 +265,8 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
             referrer: 'http://example.com/'
           }
         }
-      })
-      .mockResolvedValueOnce({
+      }))
+      .mockImplementationOnce(() => Promise.resolve({
         result: {
           value: {
             activeElement: 'button#submit',
@@ -275,7 +275,7 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
             documentScrollLeft: 0
           }
         }
-      });
+      }));
     
     const errorWithDOM = await server.collectDOMContext(tabId, {
       type: 'runtime',
@@ -292,7 +292,7 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
     const tabId = 'ABCDEF0123456789ABCDEF0123456789';
     
     // Mock performance metrics
-    mockClient.Runtime.evaluate = jest.fn().mockResolvedValue({
+    mockClient.Runtime.evaluate = jest.fn(() => Promise.resolve({
       result: {
         value: {
           memory: {
@@ -307,7 +307,7 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
           }
         }
       }
-    });
+    }));
     
     const errorWithPerf = await server.collectPerformanceContext(tabId, {
       type: 'runtime',
@@ -331,9 +331,9 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
     };
     
     // Mock all context collectors
-    mockClient.Runtime.evaluate = jest.fn().mockResolvedValue({
+    mockClient.Runtime.evaluate = jest.fn(() => Promise.resolve({
       result: { value: { test: 'context' } }
-    });
+    }));
     
     const enhancedError = await server.enhanceErrorWithFullContext(tabId, baseError);
     
@@ -347,7 +347,7 @@ describe('Task 19.3: Enhanced Error Context Collection', () => {
     const tabId = 'ABCDEF0123456789ABCDEF0123456789';
     
     // Mock context collection failure
-    mockClient.Runtime.evaluate = jest.fn().mockRejectedValue(new Error('Context collection failed'));
+    mockClient.Runtime.evaluate = jest.fn(() => Promise.reject(new Error('Context collection failed')));
     
     const errorWithFailedContext = await server.collectBrowserContext(tabId, {
       type: 'runtime',

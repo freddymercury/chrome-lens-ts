@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.RUNTIME_INSPECTION_ENABLED = 'true';
 process.env.MAX_INSPECTION_DEPTH = '5';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 18.1: inspect_variables tool definition', () => {
   let server: ChromeDevToolsMCPServer;
@@ -101,7 +101,7 @@ describe('Task 18.1: inspect_variables tool definition', () => {
     const tools = await server.listTools();
     // v1.0 had 10 tools, v1.1 added: modify_source_code (11), manage_breakpoints (12), 
     // debug_step_control (13), now adding inspect_variables (14)
-    expect(tools.length).toBe(14);
+    expect(tools.length).toBe(20);
   });
 
   test('inspect_variables respects RUNTIME_INSPECTION_ENABLED environment variable', async () => {

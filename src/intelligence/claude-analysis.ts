@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { ProblemCategory, DebugStrategy, DebugStep } from '../types/intelligence.js';
+import { ProblemCategory, DebugStrategy } from '../types/intelligence.js';
 
 export interface ClaudeAnalysisConfig {
   apiKey: string;

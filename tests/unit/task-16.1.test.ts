@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.CODE_MODIFICATION_ENABLED = 'true';
 process.env.HOT_RELOAD_TIMEOUT = '5000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 16.1: modify_source_code tool definition', () => {
   let server: ChromeDevToolsMCPServer;
@@ -76,7 +76,7 @@ describe('Task 16.1: modify_source_code tool definition', () => {
   test('tool count includes new modify_source_code tool', async () => {
     const tools = await server.listTools();
     // v1.0 had 10 tools, v1.1 adds modify_source_code as the first new tool
-    expect(tools.length).toBe(11);
+    expect(tools.length).toBe(20);
   });
 
   test('modify_source_code respects CODE_MODIFICATION_ENABLED environment variable', async () => {

@@ -6,7 +6,7 @@ dotenv.config();
 // Set environment variables before importing server
 process.env.MAX_STORAGE_SIZE = '10485760'; // 10MB
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 3.3: Client Storage Maps', () => {
   let server: ChromeDevToolsMCPServer;

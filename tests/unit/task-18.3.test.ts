@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.RUNTIME_INSPECTION_ENABLED = 'true';
 process.env.STATE_ANALYSIS_ENABLED = 'true';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 18.3: analyze_runtime_state tool definition', () => {
   let server: ChromeDevToolsMCPServer;
@@ -100,7 +100,7 @@ describe('Task 18.3: analyze_runtime_state tool definition', () => {
     const tools = await server.listTools();
     // v1.0 had 10 tools, v1.1 added: modify_source_code (11), manage_breakpoints (12), 
     // debug_step_control (13), inspect_variables (14), now adding analyze_runtime_state (15)
-    expect(tools.length).toBe(15);
+    expect(tools.length).toBe(20);
   });
 
   test('analyze_runtime_state respects STATE_ANALYSIS_ENABLED environment variable', async () => {

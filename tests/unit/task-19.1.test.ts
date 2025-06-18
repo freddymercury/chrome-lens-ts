@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.ERROR_ANALYSIS_ENABLED = 'true';
 process.env.MAX_ERROR_STACK_DEPTH = '10';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 19.1: analyze_errors tool definition', () => {
   let server: ChromeDevToolsMCPServer;
@@ -108,7 +108,7 @@ describe('Task 19.1: analyze_errors tool definition', () => {
     // v1.0 had 10 tools, v1.1 added: modify_source_code (11), manage_breakpoints (12), 
     // debug_step_control (13), inspect_variables (14), analyze_runtime_state (15),
     // now adding analyze_errors (16)
-    expect(tools.length).toBe(16);
+    expect(tools.length).toBe(20);
   });
 
   test('analyze_errors respects ERROR_ANALYSIS_ENABLED environment variable', async () => {

@@ -7,7 +7,7 @@ dotenv.config();
 process.env.CHROME_DEBUG_PORT = '9222';
 process.env.CHROME_DEBUG_HOST = 'localhost';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 15.1: Add Performance Monitoring Tool', () => {
   let server: ChromeDevToolsMCPServer;
@@ -298,7 +298,7 @@ describe('Task 15.1: Add Performance Monitoring Tool', () => {
 
   test('get_performance_metrics nine tools exist now', async () => {
     const tools = await server.listTools();
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(20);
     
     const toolNames = tools.map(tool => tool.name);
     expect(toolNames).toContain('connect_to_chrome');

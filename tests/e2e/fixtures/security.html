@@ -1,0 +1,16 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Security Test Page</title>
+</head>
+<body>
+  <h1>Security Test</h1>
+  <script>
+    // Simulate XSS vulnerability
+    const userInput = '<img src=x onerror=alert(1)>';
+    document.body.innerHTML += userInput;
+  </script>
+</body>
+</html>
+  

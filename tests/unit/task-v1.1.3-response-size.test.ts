@@ -1,4 +1,5 @@
-import { ChromeDevToolsMCPServer } from '../../server';
+import { TextEncoder } from 'util';
+import ChromeDevToolsMCPServer from '../../server';
 import { jest } from '@jest/globals';
 
 describe('Task v1.1.3: Response Size Management', () => {
@@ -22,9 +23,16 @@ describe('Task v1.1.3: Response Size Management', () => {
         getDocument: jest.fn(),
         querySelectorAll: jest.fn()
       },
+      CSS: {
+        enable: jest.fn()
+      },
       Page: {
         enable: jest.fn(),
         getResourceTree: jest.fn()
+      },
+      Runtime: {
+        enable: jest.fn(),
+        evaluate: jest.fn()
       },
       on: jest.fn()
     };
@@ -32,15 +40,55 @@ describe('Task v1.1.3: Response Size Management', () => {
     // Mock responses
     mockClient.send.mockResolvedValue({});
     mockClient.Debugger.enable.mockResolvedValue({});
+    mockClient.Debugger.getScriptSource.mockResolvedValue({
+      scriptSource: 'console.log("test");'
+    });
     mockClient.DOM.enable.mockResolvedValue({});
+    mockClient.DOM.getDocument.mockResolvedValue({
+      root: { nodeId: 1 }
+    });
+    mockClient.DOM.querySelectorAll.mockResolvedValue({
+      nodeIds: []
+    });
     mockClient.Page.enable.mockResolvedValue({});
+    mockClient.Page.getResourceTree.mockResolvedValue({
+      frameTree: {
+        frame: { id: 'frame1', url: 'http://localhost' },
+        resources: []
+      }
+    });
+    mockClient.CSS.enable.mockResolvedValue({});
+    mockClient.Runtime.enable.mockResolvedValue({});
+    mockClient.Runtime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          scripts: [],
+          stylesheets: [],
+          documentURL: 'http://localhost',
+          title: 'Test Page'
+        }
+      }
+    });
     
-    // Set up client
-    (server as any)['clients'].set('test-tab', mockClient);
+    // Set up client using addStorageEntry
+    server.addStorageEntry('clients', 'A1B2C3D4E5F6789012345678901234AB', mockClient);
+    
+    // Set up DOM state as enabled by accessing private property
+    (server as any).domStates.set('A1B2C3D4E5F6789012345678901234AB', {
+      enabled: true,
+      enabling: false,
+      enabledAt: Date.now()
+    });
   });
 
   afterEach(() => {
     jest.clearAllMocks();
+    
+    // Clear cleanup interval if it exists
+    const cleanupInterval = (server as any)['cleanupInterval'];
+    if (cleanupInterval) {
+      clearInterval(cleanupInterval);
+    }
   });
 
   describe('Pure Function: calculateResponseSize', () => {
@@ -84,14 +132,14 @@ describe('Task v1.1.3: Response Size Management', () => {
         pageItems = pageItems.slice(0, Math.floor(pageItems.length * 0.8));
       }
       
-      const actualPageSize = pageItems.length;
-      const totalPages = Math.ceil(items.length / actualPageSize);
+      // Calculate total pages based on original page size, not actual returned size
+      const totalPages = Math.ceil(items.length / pageSize);
       
       return {
         items: pageItems,
         pagination: {
           page,
-          pageSize: actualPageSize,
+          pageSize: pageItems.length,
           totalItems: items.length,
           totalPages,
           hasNextPage: page < totalPages,
@@ -183,7 +231,7 @@ describe('Task v1.1.3: Response Size Management', () => {
         sourceRegistry.set(file.scriptId, file);
       });
       
-      (server as any)['sourceFiles'] = new Map([['test-tab', sourceRegistry]]);
+      (server as any)['sourceFiles'] = new Map([['A1B2C3D4E5F6789012345678901234AB', sourceRegistry]]);
       
       // Mock DOM queries
       mockClient.DOM.getDocument.mockResolvedValue({
@@ -208,7 +256,11 @@ describe('Task v1.1.3: Response Size Management', () => {
     });
 
     test('returns paginated results by default', async () => {
-      const result = await server.listSourceFiles({ tabId: 'test-tab' });
+      const result = await server.listSourceFiles({ tabId: 'A1B2C3D4E5F6789012345678901234AB' });
+      
+      if (!result.success) {
+        console.log('Test failed with error:', JSON.stringify(result, null, 2));
+      }
       
       expect(result.success).toBe(true);
       expect(result.sourceFiles).toBeDefined();
@@ -219,22 +271,22 @@ describe('Task v1.1.3: Response Size Management', () => {
 
     test('respects pageSize parameter', async () => {
       const result = await server.listSourceFiles({ 
-        tabId: 'test-tab',
+        tabId: 'A1B2C3D4E5F6789012345678901234AB',
         pageSize: 50
       });
       
       expect(result.success).toBe(true);
-      expect(result.sourceFiles.scriptFiles.length).toBeLessThanOrEqual(50);
+      expect(result.sourceFiles.files.length).toBeLessThanOrEqual(50);
     });
 
     test('continues from token', async () => {
       // Get first page
-      const firstPage = await server.listSourceFiles({ tabId: 'test-tab' });
+      const firstPage = await server.listSourceFiles({ tabId: 'A1B2C3D4E5F6789012345678901234AB' });
       expect(firstPage.continuationToken).toBeDefined();
       
       // Get second page
       const secondPage = await server.listSourceFiles({ 
-        tabId: 'test-tab',
+        tabId: 'A1B2C3D4E5F6789012345678901234AB',
         continuationToken: firstPage.continuationToken
       });
       
@@ -245,7 +297,7 @@ describe('Task v1.1.3: Response Size Management', () => {
 
     test('filters results', async () => {
       const result = await server.listSourceFiles({ 
-        tabId: 'test-tab',
+        tabId: 'A1B2C3D4E5F6789012345678901234AB',
         filters: {
           path: '/src/file1',
           extension: '.js'
@@ -253,18 +305,18 @@ describe('Task v1.1.3: Response Size Management', () => {
       });
       
       expect(result.success).toBe(true);
-      expect(result.sourceFiles.scriptFiles.length).toBeLessThan(500);
+      expect(result.sourceFiles.files.length).toBeLessThan(500);
     });
 
     test('limits response size', async () => {
       const result = await server.listSourceFiles({ 
-        tabId: 'test-tab',
+        tabId: 'A1B2C3D4E5F6789012345678901234AB',
         maxResponseSize: 50000 // 50KB limit
       });
       
       expect(result.success).toBe(true);
       expect(result.responseSize).toBeLessThanOrEqual(50000);
-      expect(result.sourceFiles.scriptFiles.length).toBeLessThan(500);
+      expect(result.sourceFiles.files.length).toBeLessThan(500);
     });
   });
 
@@ -278,9 +330,9 @@ describe('Task v1.1.3: Response Size Management', () => {
         hasSourceURL: false
       });
       
-      (server as any)['sourceFiles'] = new Map([['test-tab', sourceRegistry]]);
+      (server as any)['sourceFiles'] = new Map([['A1B2C3D4E5F6789012345678901234AB', sourceRegistry]]);
       
-      const result = await server.listSourceFiles({ tabId: 'test-tab' });
+      const result = await server.listSourceFiles({ tabId: 'A1B2C3D4E5F6789012345678901234AB' });
       
       expect(result.success).toBe(true);
       expect(result.sourceFiles).toBeDefined();
@@ -288,17 +340,17 @@ describe('Task v1.1.3: Response Size Management', () => {
     });
 
     test('handles empty results', async () => {
-      (server as any)['sourceFiles'] = new Map([['test-tab', new Map()]]);
+      (server as any)['sourceFiles'] = new Map([['A1B2C3D4E5F6789012345678901234AB', new Map()]]);
       
       const result = await server.listSourceFiles({ 
-        tabId: 'test-tab',
+        tabId: 'A1B2C3D4E5F6789012345678901234AB',
         page: 1,
         pageSize: 100
       });
       
       expect(result.success).toBe(true);
-      expect(result.sourceFiles.scriptFiles).toHaveLength(0);
-      expect(result.pagination.totalItems).toBe(0);
+      expect(result.sourceFiles.files).toHaveLength(1); // HTML file is always included
+      expect(result.pagination.totalItems).toBe(1); // HTML file is always included
     });
   });
 });

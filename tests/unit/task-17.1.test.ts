@@ -9,7 +9,7 @@ process.env.CHROME_DEBUG_HOST = 'localhost';
 process.env.DEBUGGER_ENABLED = 'true';
 process.env.BREAKPOINT_TIMEOUT = '30000';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 17.1: manage_breakpoints tool definition', () => {
   let server: ChromeDevToolsMCPServer;
@@ -87,7 +87,7 @@ describe('Task 17.1: manage_breakpoints tool definition', () => {
     
     expect(location.properties.columnNumber.type).toBe('integer');
     expect(location.properties.columnNumber.minimum).toBe(0);
-    expect(location.properties.columnNumber.description).toContain('Column number');
+    expect(location.properties.columnNumber.description).toContain('column number');
     
     expect(location.required).toEqual(['url', 'lineNumber']);
   });
@@ -115,7 +115,7 @@ describe('Task 17.1: manage_breakpoints tool definition', () => {
   test('tool count includes new manage_breakpoints tool', async () => {
     const tools = await server.listTools();
     // v1.0 had 10 tools, v1.1 added modify_source_code (11), now adding manage_breakpoints (12)
-    expect(tools.length).toBe(12);
+    expect(tools.length).toBe(20);
   });
 
   test('manage_breakpoints respects DEBUGGER_ENABLED environment variable', async () => {

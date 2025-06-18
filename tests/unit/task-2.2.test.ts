@@ -6,7 +6,7 @@ dotenv.config();
 // Set environment variables before importing server
 process.env.LOG_LEVEL = 'debug';
 
-import { ChromeDevToolsMCPServer } from '../../server';
+import ChromeDevToolsMCPServer from '../../server';
 
 describe('Task 2.2: Error Handling Setup', () => {
   let server: ChromeDevToolsMCPServer;

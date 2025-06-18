@@ -28,7 +28,9 @@ export function shouldSkipValidation(params: ValidationParams): boolean {
  * Detect file type from URL or filename
  */
 export function detectFileType(url: string): FileTypeInfo {
-  const lowerUrl = url.toLowerCase();
+  // Remove query parameters and fragments from URL
+  const cleanUrl = url.split('?')[0].split('#')[0];
+  const lowerUrl = cleanUrl.toLowerCase();
   
   if (lowerUrl.endsWith('.ts') || lowerUrl.endsWith('.tsx')) {
     return {
@@ -39,7 +41,7 @@ export function detectFileType(url: string): FileTypeInfo {
     };
   }
   
-  if (lowerUrl.endsWith('.js') || lowerUrl.endsWith('.jsx')) {
+  if (lowerUrl.endsWith('.js') || lowerUrl.endsWith('.jsx') || lowerUrl.endsWith('.mjs')) {
     return {
       type: 'javascript',
       isTypeScript: false,
