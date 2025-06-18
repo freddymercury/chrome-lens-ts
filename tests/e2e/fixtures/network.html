@@ -1,0 +1,16 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Network Test Page</title>
+</head>
+<body>
+  <h1>Network Test</h1>
+  <script>
+    fetch('/api/test')
+      .then(res => console.log('Fetch completed'))
+      .catch(err => console.error('Fetch failed:', err));
+  </script>
+</body>
+</html>
+  

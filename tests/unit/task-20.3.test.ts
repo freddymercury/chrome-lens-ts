@@ -104,7 +104,7 @@ describe('Task 20.3: watch_state_changes tool definition', () => {
   test('tool count includes new watch_state_changes tool', async () => {
     const tools = await server.listTools();
     // v1.0 had 10 tools, v1.1 added 7 more (monitor_events was 17th), now adding watch_state_changes (18th)
-    expect(tools.length).toBe(19);
+    expect(tools.length).toBe(20);
   });
 
   test('watch_state_changes respects STATE_MONITORING_ENABLED environment variable', async () => {

@@ -1,0 +1,20 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Performance Test Page</title>
+</head>
+<body>
+  <h1>Performance Test</h1>
+  <script>
+    // Simulate slow operation
+    const start = Date.now();
+    let sum = 0;
+    for (let i = 0; i < 100000000; i++) {
+      sum += i;
+    }
+    console.log('Slow operation took', Date.now() - start, 'ms');
+  </script>
+</body>
+</html>
+  

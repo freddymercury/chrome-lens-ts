@@ -122,7 +122,7 @@ describe('Task 11.1: security_audit Tool Definition', () => {
 
   test('nine tools exist now (connect_to_chrome, list_tabs, start_monitoring, get_console_messages, get_network_activity, execute_js, security_audit, check_vulnerabilities, get_performance_metrics)', async () => {
     const tools = await server.listTools();
-    expect(tools).toHaveLength(19);
+    expect(tools).toHaveLength(20);
     
     const toolNames = tools.map(tool => tool.name);
     expect(toolNames).toContain('connect_to_chrome');

@@ -101,7 +101,7 @@ describe('Task 18.1: inspect_variables tool definition', () => {
     const tools = await server.listTools();
     // v1.0 had 10 tools, v1.1 added: modify_source_code (11), manage_breakpoints (12), 
     // debug_step_control (13), now adding inspect_variables (14)
-    expect(tools.length).toBe(19);
+    expect(tools.length).toBe(20);
   });
 
   test('inspect_variables respects RUNTIME_INSPECTION_ENABLED environment variable', async () => {

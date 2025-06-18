@@ -134,8 +134,8 @@ describe('Task 21.1: Add suggest_debugging_strategy Tool Definition', () => {
 
     it('should maintain correct tool count after addition', async () => {
       const tools = await server.listTools();
-      // Should have at least 19 tools (18 existing + 1 new)
-      expect(tools.length).toBeGreaterThanOrEqual(19);
+      // Should have at least 20 tools (19 existing + 1 new)
+      expect(tools.length).toBeGreaterThanOrEqual(20);
     });
   });
 });
