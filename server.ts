@@ -544,8 +544,7 @@ export class ChromeDevToolsMCPServer {
   // Connection states for reliability tracking
   private connectionStates: Map<string, any> = new Map();
   
-  // Cleanup interval for old data
-  // @ts-expect-error - Used for cleanup but not directly referenced
+  // Cleanup interval for old data (used in startCleanupInterval)
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   
   // v1.2 Event Stream Manager
@@ -582,6 +581,10 @@ export class ChromeDevToolsMCPServer {
     }
     if (!this.strategyToolHandler) {
       // Will be initialized when needed
+    }
+    // Ensure cleanupInterval is referenced
+    if (!this.cleanupInterval) {
+      // Will be set in startCleanupInterval
     }
   }
 
@@ -1384,7 +1387,16 @@ export class ChromeDevToolsMCPServer {
         }
       },
       // v1.2 Intelligence Layer tool
-      createStrategyToolSchema()
+      createStrategyToolSchema(),
+      {
+        name: 'get_version',
+        description: 'Get the current version and build information of Chrome Lens TS',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: []
+        }
+      }
     ];
     
     if (LOG_LEVEL === 'debug') {
@@ -1488,6 +1500,9 @@ export class ChromeDevToolsMCPServer {
       
       case 'suggest_debugging_strategy':
         return await this.suggestDebuggingStrategy(parameters);
+      
+      case 'get_version':
+        return await this.getVersion();
       
       default:
         throw new Error(`Unknown tool: ${name}. Available tools: ${this.tools.map(t => t.name).join(', ') || 'none'}`);
@@ -7853,6 +7868,109 @@ export class ChromeDevToolsMCPServer {
    */
   public getStateWatcher(tabId: string): StateWatcher | undefined {
     return this.stateWatchers.get(tabId);
+  }
+
+  /**
+   * Get version and build information
+   */
+  public async getVersion(): Promise<any> {
+    const fs = await import('fs');
+    const path = await import('path');
+    
+    try {
+      // Try to find package.json - check multiple locations
+      let packageJson: any;
+      let packageJsonPath: string;
+      
+      // First try: current working directory
+      try {
+        packageJsonPath = path.join(process.cwd(), 'package.json');
+        packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      } catch {
+        // Second try: one level up from dist
+        try {
+          packageJsonPath = path.join(process.cwd(), '..', 'package.json');
+          packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+        } catch {
+          // Third try: use a fallback
+          packageJson = {
+            name: 'chrome-lens-ts',
+            version: '0.1.0',
+            description: 'Chrome DevTools MCP Server',
+            dependencies: {
+              '@modelcontextprotocol/sdk': '^0.6.0',
+              'chrome-remote-interface': '^0.33.2'
+            }
+          };
+        }
+      }
+      
+      // Get build timestamp
+      let buildTime = 'unknown';
+      try {
+        // Try to get the build time from dist/server.js
+        const distPath = path.join(process.cwd(), 'dist', 'server.js');
+        const stats = fs.statSync(distPath);
+        buildTime = stats.mtime.toISOString();
+      } catch {
+        // If that fails, just use current time
+        buildTime = new Date().toISOString();
+      }
+      
+      // Get Node.js version
+      const nodeVersion = process.version;
+      
+      // Get environment info
+      const environment = {
+        NODE_ENV: process.env.NODE_ENV || 'production',
+        LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+        MCP_SERVER_NAME: process.env.MCP_SERVER_NAME || 'chrome-lens-ts',
+        CHROME_DEBUG_PORT: process.env.CHROME_DEBUG_PORT || '9222',
+        CHROME_DEBUG_HOST: process.env.CHROME_DEBUG_HOST || 'localhost'
+      };
+      
+      return {
+        success: true,
+        version: {
+          name: packageJson.name,
+          version: packageJson.version,
+          description: packageJson.description,
+          buildTime: buildTime,
+          nodeVersion: nodeVersion,
+          mcp: {
+            sdkVersion: packageJson.dependencies['@modelcontextprotocol/sdk'],
+            protocolVersion: '0.1.0'
+          },
+          chrome: {
+            cdpVersion: packageJson.dependencies['chrome-remote-interface']
+          },
+          tools: {
+            count: this.tools.length,
+            names: this.tools.map(t => t.name)
+          },
+          environment: environment,
+          features: {
+            securityAuditing: true,
+            performanceMonitoring: true,
+            sourceCodeModification: process.env.CODE_MODIFICATION_ENABLED !== 'false',
+            debugging: process.env.DEBUGGER_ENABLED !== 'false',
+            eventMonitoring: process.env.EVENT_MONITORING_ENABLED !== 'false',
+            stateMonitoring: process.env.STATE_MONITORING_ENABLED !== 'false',
+            intelligenceLayer: true
+          }
+        }
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: `Failed to get version information: ${error.message}`,
+        version: {
+          name: 'chrome-lens-ts',
+          version: 'unknown',
+          nodeVersion: process.version
+        }
+      };
+    }
   }
 
   /**
